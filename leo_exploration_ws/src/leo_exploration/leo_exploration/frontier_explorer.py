@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.0
+ROS2 Jazzy  |  v2.1
+
+Changelog v2.1 (performance optimizations):
+  Perf 1 - Map array caching: _get_map_array() caches numpy conversion,
+            avoiding O(w*h) conversion on every control loop iteration.
+  Perf 2 - Vectorized frontier scoring: _score_frontiers() uses numpy
+            for batch distance, angle, and penalty calculations.
+  Perf 3 - Vectorized centroid calculation: uses numpy array operations
+            instead of Python sum() for cluster centroid computation.
+  Perf 4 - Optimized BFS iteration: direct numpy array indexing instead
+            of converting to Python lists with .tolist().
 
 Changelog v2.0 (analysis_report.md fixes applied):
   Bug 1  - Extract _map_stats() helper: _log_progress / _explored_pct share
@@ -140,6 +150,10 @@ class FrontierExplorer(Node):
         self._svc_local_ok:  bool = False
         self._svc_global_ok: bool = False
 
+        # Map data cache: avoid redundant numpy array conversions
+        self._map_cache_header_stamp = None
+        self._map_cache_array: Optional[np.ndarray] = None
+
         # TF
         self.tf_buf      = Buffer()
         self.tf_listener = TransformListener(self.tf_buf, self)
@@ -239,7 +253,12 @@ class FrontierExplorer(Node):
     #  Callbacks
     # -------------------------------------------------------------------------
 
-    def _map_cb(self, msg: OccupancyGrid)     -> None: self.map_data     = msg
+    def _map_cb(self, msg: OccupancyGrid) -> None:
+        self.map_data = msg
+        # Invalidate cache when new map arrives
+        self._map_cache_header_stamp = None
+        self._map_cache_array = None
+
     def _costmap_cb(self, msg: OccupancyGrid) -> None: self.costmap_data = msg   # P1
     def _scan_cb(self, msg: LaserScan)        -> None: self.latest_scan  = msg
 
@@ -262,6 +281,31 @@ class FrontierExplorer(Node):
     def _now_sec(self) -> float:
         """Seconds from ROS clock. Works with use_sim_time:=true."""
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def _get_map_array(self) -> Optional[np.ndarray]:
+        """
+        Return cached numpy array of map data, converting only when map changes.
+        Avoids O(w*h) array conversion on every call to _detect_frontiers
+        and _map_stats when the map hasn't been updated.
+        """
+        if self.map_data is None:
+            return None
+
+        stamp = self.map_data.header.stamp
+        if (
+            self._map_cache_array is not None
+            and self._map_cache_header_stamp == stamp
+        ):
+            return self._map_cache_array
+
+        # Map changed - rebuild cache
+        w = self.map_data.info.width
+        h = self.map_data.info.height
+        self._map_cache_array = np.array(
+            self.map_data.data, dtype=np.int8
+        ).reshape((h, w))
+        self._map_cache_header_stamp = stamp
+        return self._map_cache_array
 
     # -------------------------------------------------------------------------
     #  Service availability probe  (Bug 3: 1 Hz, non-blocking)
@@ -346,10 +390,12 @@ class FrontierExplorer(Node):
         Returns (free_cells, occupied_cells, unknown_cells, explored_pct).
         Uses int8 dtype: unknown=-1, free=0, occupied=1..100.
         Both _log_progress() and _explored_pct() delegate here (Bug 1 fix).
+        Uses cached array to avoid redundant numpy conversions.
         """
-        if self.map_data is None:
+        raw = self._get_map_array()
+        if raw is None:
             return 0, 0, 0, 0.0
-        d    = np.array(self.map_data.data, dtype=np.int8)
+        d    = raw.ravel()  # Flatten for counting (view, not copy)
         free = int(np.sum(d == 0))
         occ  = int(np.sum((d > 0) & (d <= 100)))
         unk  = int(np.sum(d == -1))
@@ -373,16 +419,15 @@ class FrontierExplorer(Node):
         detections at map borders even after manual edge-clearing. np.pad with
         constant_values=False (zero) avoids this entirely.
         """
-        if self.map_data is None:
+        raw = self._get_map_array()
+        if raw is None:
             return []
 
-        w   = self.map_data.info.width
-        h   = self.map_data.info.height
+        h, w = raw.shape
         res = self.map_data.info.resolution
         ox  = self.map_data.info.origin.position.x
         oy  = self.map_data.info.origin.position.y
 
-        raw     = np.array(self.map_data.data, dtype=np.int8).reshape((h, w))
         free    = raw == 0
         unknown = raw == -1
 
@@ -403,7 +448,9 @@ class FrontierExplorer(Node):
         clusters: dict = {}
 
         ys, xs = np.where(frontier_mask)
-        for sy, sx in zip(ys.tolist(), xs.tolist()):
+        # Iterate directly over numpy arrays - avoid Python list conversion overhead
+        for i in range(len(ys)):
+            sy, sx = int(ys[i]), int(xs[i])
             if labeled[sy, sx] != 0:
                 continue
             cluster_id += 1
@@ -430,15 +477,18 @@ class FrontierExplorer(Node):
         # Convert to world coordinates + P1 inflation filter
         frontiers: List[Frontier] = []
         for cid, cells in clusters.items():
-            if len(cells) < self.p_min_frontier:
+            n_cells = len(cells)
+            if n_cells < self.p_min_frontier:
                 continue
-            mean_col = sum(c[0] for c in cells) / len(cells)
-            mean_row = sum(c[1] for c in cells) / len(cells)
+            # Vectorized centroid calculation using numpy
+            cells_arr = np.array(cells, dtype=np.float32)
+            mean_col = cells_arr[:, 0].mean()
+            mean_row = cells_arr[:, 1].mean()
             wx = mean_col * res + ox
             wy = mean_row * res + oy
             if self._frontier_in_inflation(wx, wy):    # P1 filter
                 continue
-            frontiers.append(Frontier(wx, wy, len(cells)))
+            frontiers.append(Frontier(wx, wy, n_cells))
 
         return frontiers
 
@@ -489,52 +539,72 @@ class FrontierExplorer(Node):
         a goal that close causes the controller to instantly report
         'Reached the goal' without actually moving.
         """
+        if not frontiers:
+            return []
+
         # Keep visited list bounded to avoid stale penalties
         if len(self._visited) > 50:
             trimmed = list(self._visited)[-30:]
             self._visited.clear()
             self._visited.extend(trimmed)
 
-        result: List[Frontier] = []
-        for f in frontiers:
-            dist = math.hypot(f.cx - rx, f.cy - ry)
+        # Extract frontier coordinates as numpy arrays for vectorized computation
+        n = len(frontiers)
+        fx = np.array([f.cx for f in frontiers], dtype=np.float32)
+        fy = np.array([f.cy for f in frontiers], dtype=np.float32)
+        sizes = np.array([f.size for f in frontiers], dtype=np.float32)
 
-            # Skip frontiers too close to robot — they cause instant
-            # "reached goal" without any movement
-            if dist < 0.5:
-                continue
+        # Vectorized distance calculation
+        dists = np.hypot(fx - rx, fy - ry)
 
-            # Information gain: normalised cluster size
-            info_score = min(1.0, f.size / 60.0)
+        # Filter out frontiers too close (< 0.5m)
+        valid_mask = dists >= 0.5
 
-            # Distance: prefer 1.0-4.0 m range
-            if dist <= 4.0:
-                dist_score = 1.0 - abs(dist - 2.0) / 4.0
-            else:
-                dist_score = max(0.0, 1.0 - (dist - 4.0) / 6.0)
+        # Vectorized information gain (normalised cluster size)
+        info_scores = np.minimum(1.0, sizes / 60.0)
 
-            # Direction: prefer frontiers roughly ahead of robot heading
-            angle_to   = math.atan2(f.cy - ry, f.cx - rx)
-            angle_diff = abs(math.atan2(
-                math.sin(angle_to - ryaw),
-                math.cos(angle_to - ryaw),
-            ))
-            dir_score = max(0.0, 1.0 - angle_diff / math.pi)
+        # Vectorized distance score: prefer 1.0-4.0 m range
+        dist_scores = np.where(
+            dists <= 4.0,
+            1.0 - np.abs(dists - 2.0) / 4.0,
+            np.maximum(0.0, 1.0 - (dists - 4.0) / 6.0)
+        )
 
-            # Revisit penalty
-            visit_pen = 0.0
-            for vx, vy in self._visited:
-                if math.hypot(f.cx - vx, f.cy - vy) < 0.6:
-                    visit_pen = 0.40
-                    break
+        # Vectorized direction score: prefer frontiers ahead of robot
+        angles_to = np.arctan2(fy - ry, fx - rx)
+        angle_diffs = np.abs(np.arctan2(
+            np.sin(angles_to - ryaw),
+            np.cos(angles_to - ryaw),
+        ))
+        dir_scores = np.maximum(0.0, 1.0 - angle_diffs / np.pi)
 
-            f.score = (
-                0.45 * info_score
-                + 0.35 * dist_score
-                + 0.15 * dir_score
-                - visit_pen
+        # Vectorized revisit penalty computation
+        visit_pens = np.zeros(n, dtype=np.float32)
+        if self._visited:
+            visited_arr = np.array(list(self._visited), dtype=np.float32)
+            # Compute distances from each frontier to all visited points
+            # Shape: (n_frontiers, n_visited)
+            dists_to_visited = np.sqrt(
+                (fx[:, np.newaxis] - visited_arr[:, 0]) ** 2 +
+                (fy[:, np.newaxis] - visited_arr[:, 1]) ** 2
             )
-            result.append(f)
+            # Apply penalty if any visited point is within 0.6m
+            visit_pens = np.where(np.any(dists_to_visited < 0.6, axis=1), 0.40, 0.0)
+
+        # Calculate final scores
+        scores = (
+            0.45 * info_scores
+            + 0.35 * dist_scores
+            + 0.15 * dir_scores
+            - visit_pens
+        )
+
+        # Build result list with only valid frontiers
+        result: List[Frontier] = []
+        for i, f in enumerate(frontiers):
+            if valid_mask[i]:
+                f.score = float(scores[i])
+                result.append(f)
 
         result.sort(key=lambda f: f.score, reverse=True)
         return result
