@@ -1,0 +1,295 @@
+<?xml version="1.0"?>
+<!--
+  Leo Rover URDF for Gazebo Harmonic (gz-sim 8)  |  ROS2 Jazzy
+  Self-contained: no leo_gz / leo_simulator dependency needed.
+
+  Dimensions from official Leo Rover drawings:
+    Body:  445 mm long, 424 mm wide, 163 mm tall (above wheel centres)
+    Wheelbase (front-rear): 295 mm
+    Track width (left-right): 354 mm (wheel contact patches)
+    Wheel radius: 65 mm, width: 80 mm
+
+  Plugins:
+    - DiffDrive  → subscribes /cmd_vel, publishes /odom + TF odom->base_link
+    - GpuLidar   → publishes /scan (similar to RPLidar A2M12)
+
+  Topics produced (via ros_gz_bridge):
+    /cmd_vel  (geometry_msgs/Twist)    ← Nav2 controller writes this
+    /odom     (nav_msgs/Odometry)      → SLAM & Nav2 read this
+    /scan     (sensor_msgs/LaserScan)  → SLAM reads this
+    /clock    (rosgraph_msgs/Clock)    → sim time
+    /tf       (tf2_msgs/TFMessage)     → odom→base_link from DiffDrive
+    /tf_static (tf2_msgs/TFMessage)   → base_link→laser from URDF joint
+-->
+<robot name="leo_rover" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Materials
+  ═══════════════════════════════════════════════════════════════════ -->
+  <material name="gray">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="black">
+    <color rgba="0.05 0.05 0.05 1.0"/>
+  </material>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Base footprint (zero-height anchor for Nav2 footprint)
+  ═══════════════════════════════════════════════════════════════════ -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 0.065" rpy="0 0 0"/>
+    <!-- 0.065 = wheel radius, base_link origin is at wheel axle height -->
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Base link  (robot body)
+  ═══════════════════════════════════════════════════════════════════ -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0.065" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.445 0.283 0.130"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.065" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.445 0.283 0.130"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="4.5"/>
+      <origin xyz="0 0 0.065" rpy="0 0 0"/>
+      <inertia ixx="0.03" ixy="0" ixz="0"
+               iyy="0.05" iyz="0"
+               izz="0.06"/>
+    </inertial>
+  </link>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Wheel macro
+  ═══════════════════════════════════════════════════════════════════ -->
+  <!-- front-left wheel -->
+  <link name="wheel_FL">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+      <material name="dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0"
+               iyy="0.001" iyz="0"
+               izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="joint_FL" type="continuous">
+    <parent link="base_link"/>
+    <child  link="wheel_FL"/>
+    <origin xyz="0.1475 0.213 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- front-right wheel -->
+  <link name="wheel_FR">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+      <material name="dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0"
+               iyy="0.001" iyz="0"
+               izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="joint_FR" type="continuous">
+    <parent link="base_link"/>
+    <child  link="wheel_FR"/>
+    <origin xyz="0.1475 -0.213 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- rear-left wheel -->
+  <link name="wheel_RL">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+      <material name="dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0"
+               iyy="0.001" iyz="0"
+               izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="joint_RL" type="continuous">
+    <parent link="base_link"/>
+    <child  link="wheel_RL"/>
+    <origin xyz="-0.1475 0.213 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- rear-right wheel -->
+  <link name="wheel_RR">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+      <material name="dark_gray"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.065" length="0.080"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.001" ixy="0" ixz="0"
+               iyy="0.001" iyz="0"
+               izz="0.001"/>
+    </inertial>
+  </link>
+  <joint name="joint_RR" type="continuous">
+    <parent link="base_link"/>
+    <child  link="wheel_RR"/>
+    <origin xyz="-0.1475 -0.213 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Laser link  (RPLidar A2M12 approximate position)
+       Mounted at centre-top of body, ~120 mm above base_link origin
+  ═══════════════════════════════════════════════════════════════════ -->
+  <link name="laser">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.038" length="0.040"/></geometry>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.038" length="0.040"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.17"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0"
+               iyy="0.0001" iyz="0"
+               izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="laser"/>
+    <!-- z=0.195: body height 0.130 + body bottom offset 0.065 = 0.195 is top of body
+         Lidar sits on top: add 0.020 for mount -->
+    <origin xyz="0.0 0.0 0.150" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Gazebo Harmonic plugins
+       NOTE: Gazebo Harmonic uses <gazebo> tags with gz-sim plugin names
+  ═══════════════════════════════════════════════════════════════════ -->
+
+  <!-- Differential Drive plugin
+       Subscribes:  /cmd_vel  (geometry_msgs/Twist via bridge)
+       Publishes:   /odom     (nav_msgs/Odometry via bridge)
+                    TF:       odom -> base_footprint (bridged as odom->base_link)
+  -->
+  <gazebo>
+    <plugin filename="gz-sim-diff-drive-system"
+            name="gz::sim::systems::DiffDrive">
+      <left_joint>joint_FL</left_joint>
+      <left_joint>joint_RL</left_joint>
+      <right_joint>joint_FR</right_joint>
+      <right_joint>joint_RR</right_joint>
+      <wheel_separation>0.426</wheel_separation>
+      <wheel_radius>0.065</wheel_radius>
+      <odom_publish_frequency>20</odom_publish_frequency>
+      <!-- Topics: Gazebo-internal names, ros_gz_bridge maps them to ROS -->
+      <topic>/cmd_vel</topic>
+      <odom_topic>/odom</odom_topic>
+      <tf_topic>/tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+      <min_acceleration>-5</min_acceleration>
+      <max_acceleration>5</max_acceleration>
+    </plugin>
+  </gazebo>
+
+  <!-- Joint State Publisher (so robot_state_publisher can broadcast TF) -->
+  <gazebo>
+    <plugin filename="gz-sim-joint-state-publisher-system"
+            name="gz::sim::systems::JointStatePublisher">
+      <topic>/joint_states</topic>
+    </plugin>
+  </gazebo>
+
+  <!-- 2D Lidar sensor (approximates RPLidar A2M12)
+       360 rays, 12m max range, 10 Hz
+  -->
+  <gazebo reference="laser">
+    <sensor name="lidar" type="gpu_lidar">
+      <topic>/scan_gz</topic>           <!-- Gazebo internal topic -->
+      <update_rate>10</update_rate>
+      <visualize>true</visualize>
+      <gz_frame_id>laser</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.15</min>
+          <max>12.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- Wheel friction (important for realistic differential drive) -->
+  <gazebo reference="wheel_FL">
+    <mu1>1.0</mu1><mu2>1.0</mu2><kp>1000000</kp><kd>100</kd>
+  </gazebo>
+  <gazebo reference="wheel_FR">
+    <mu1>1.0</mu1><mu2>1.0</mu2><kp>1000000</kp><kd>100</kd>
+  </gazebo>
+  <gazebo reference="wheel_RL">
+    <mu1>1.0</mu1><mu2>1.0</mu2><kp>1000000</kp><kd>100</kd>
+  </gazebo>
+  <gazebo reference="wheel_RR">
+    <mu1>1.0</mu1><mu2>1.0</mu2><kp>1000000</kp><kd>100</kd>
+  </gazebo>
+
+</robot>
