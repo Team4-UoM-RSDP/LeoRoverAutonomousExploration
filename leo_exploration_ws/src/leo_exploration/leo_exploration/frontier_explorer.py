@@ -469,7 +469,7 @@ class FrontierExplorer(Node):
         # Shift values: int8 -1→0, 0→1, 1→2, ..., 100→101
         # so all values are non-negative for bincount
         shifted = d.astype(np.int16) + 1
-        counts = np.bincount(shifted.clip(0), minlength=102)
+        counts = np.bincount(shifted, minlength=102)
         unk  = int(counts[0])          # original -1
         free = int(counts[1])          # original  0
         occ  = int(counts[2:102].sum())  # original 1..100
@@ -607,12 +607,16 @@ class FrontierExplorer(Node):
             ib_rows = rows[in_bounds]
             ib_cols = cols[in_bounds]
             costs = cm_arr[ib_rows, ib_cols].astype(np.int16)
-            # nav2 costmap int8: 0=free, 1-252=inflated, 253=inscribed,
-            # 254=lethal (-2 as int8), 255=unknown (-1 as int8)
-            # We treat cost >= COSTMAP_LETHAL_THRESH as unreachable
-            # In int8, values 0..127 are positive, -128..-1 map to 128..255
-            # So compare against the signed threshold directly
-            in_inflation[in_bounds] = (costs >= COSTMAP_LETHAL_THRESH) & (costs < 255)
+            # The costmap array uses int8 dtype, so ROS values 128-255
+            # wrap to negative in int8. Cast to int16 to recover the
+            # original unsigned semantics for threshold comparison.
+            # nav2 costmap: 0=free, 1-252=inflated, 253=inscribed,
+            # 254=lethal, 255=unknown.  We filter >= COSTMAP_LETHAL_THRESH.
+            unsigned_costs = costs + np.int16(256) * (costs < 0)
+            in_inflation[in_bounds] = (
+                (unsigned_costs >= COSTMAP_LETHAL_THRESH)
+                & (unsigned_costs < 255)
+            )
 
         return [f for f, blocked in zip(frontiers, in_inflation) if not blocked]
 

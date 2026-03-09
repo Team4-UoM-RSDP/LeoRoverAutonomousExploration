@@ -113,7 +113,7 @@ ros2 launch leo_exploration sim_exploration_launch.py rviz:=false
 
 ## Real Robot Deployment
 
-The `frontier_explorer` node is 100 % shared between simulation and real hardware.
+The `frontier_explorer` node is 100% shared between simulation and real hardware.
 
 ### Steps
 
