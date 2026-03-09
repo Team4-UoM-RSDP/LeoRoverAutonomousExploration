@@ -263,20 +263,6 @@ All parameters are configurable via launch files or ROS 2 CLI overrides:
 
 ---
 
-## Performance Optimisations
-
-| Version | Optimisation | Impact |
-|---------|-------------|--------|
-| v2.1 | **Map array caching** — `_get_map_array()` converts `OccupancyGrid.data` to numpy once per map update, not every control tick | Avoids O(w×h) conversion at 5 Hz |
-| v2.1 | **Vectorised frontier scoring** — batch distance, angle, and penalty computation via numpy | Eliminates per-frontier Python loops |
-| v2.1 | **Vectorised centroid calculation** — `np.array().mean()` instead of `sum()/len()` | Faster for large clusters |
-| v2.1 | **Optimised BFS** — direct numpy index access instead of `.tolist()` | Reduces object creation |
-| v2.2 | **Scan array caching** — `_obstacle_in_sector()` caches ranges/angles numpy arrays, invalidated on new scan | Avoids O(n) allocation every 5 Hz tick |
-| v2.2 | **Single-pass map statistics** — `np.bincount` replaces three separate `np.sum` calls in `_map_stats()` | One pass instead of three |
-| v2.2 | **Costmap array caching** — `_get_costmap_array()` mirrors the map cache strategy | Avoids redundant numpy conversion |
-| v2.2 | **Batched inflation filter** — `_filter_frontiers_by_costmap()` checks all frontier centroids in one vectorised operation | Removes per-frontier Python loop |
-
----
 
 ## File Structure
 
@@ -322,7 +308,3 @@ leo_exploration_ws/src/leo_exploration/
 | "Action server inactive" on real robot | TF remap issue in Jazzy | Use the direct-node-launch approach from `sim_exploration_launch.py` |
 
 ---
-
-## License
-
-MIT
