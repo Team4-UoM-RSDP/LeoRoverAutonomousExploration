@@ -1,7 +1,20 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.1
+ROS2 Jazzy  |  v2.2
+
+Changelog v2.2 (performance optimizations round 2):
+  Perf 5 - Scan array caching: _obstacle_in_sector() caches numpy arrays
+            (ranges + angles) to avoid O(n) conversion every 5 Hz tick.
+  Perf 6 - Single-pass map stats: _map_stats() uses np.bincount instead of
+            three separate np.sum calls, reducing passes over the array.
+  Perf 7 - Costmap array caching: _get_costmap_array() caches numpy
+            conversion, mirroring the map cache strategy.
+  Perf 8 - Batched inflation filter: _filter_frontiers_by_costmap() checks
+            all frontier centroids in one vectorized numpy operation instead
+            of per-frontier Python calls.
+  Perf 9 - Removed dead visited-list trimming code in _score_frontiers()
+            (deque maxlen=24 makes the len>50 check unreachable).
 
 Changelog v2.1 (performance optimizations):
   Perf 1 - Map array caching: _get_map_array() caches numpy conversion,
@@ -154,6 +167,15 @@ class FrontierExplorer(Node):
         self._map_cache_header_stamp = None
         self._map_cache_array: Optional[np.ndarray] = None
 
+        # Costmap data cache (Perf 7): same strategy as map cache
+        self._costmap_cache_header_stamp = None
+        self._costmap_cache_array: Optional[np.ndarray] = None
+
+        # Scan data cache (Perf 5): avoid rebuilding numpy arrays every tick
+        self._scan_cache_seq: Optional[int] = None
+        self._scan_cache_ranges: Optional[np.ndarray] = None
+        self._scan_cache_angles: Optional[np.ndarray] = None
+
         # TF
         self.tf_buf      = Buffer()
         self.tf_listener = TransformListener(self.tf_buf, self)
@@ -259,8 +281,16 @@ class FrontierExplorer(Node):
         self._map_cache_header_stamp = None
         self._map_cache_array = None
 
-    def _costmap_cb(self, msg: OccupancyGrid) -> None: self.costmap_data = msg   # P1
-    def _scan_cb(self, msg: LaserScan)        -> None: self.latest_scan  = msg
+    def _costmap_cb(self, msg: OccupancyGrid) -> None:
+        self.costmap_data = msg
+        # Invalidate costmap cache when new data arrives (Perf 7)
+        self._costmap_cache_header_stamp = None
+        self._costmap_cache_array = None
+
+    def _scan_cb(self, msg: LaserScan) -> None:
+        self.latest_scan = msg
+        # Invalidate scan cache when new data arrives (Perf 5)
+        self._scan_cache_seq = None
 
     def _enable_cb(self, msg: Bool) -> None:
         """P2: publish std_msgs/Bool False to /explore/enable to pause."""
@@ -307,6 +337,29 @@ class FrontierExplorer(Node):
         self._map_cache_header_stamp = stamp
         return self._map_cache_array
 
+    def _get_costmap_array(self) -> Optional[np.ndarray]:
+        """
+        Perf 7: Return cached numpy array of costmap data.
+        Same caching strategy as _get_map_array().
+        """
+        if self.costmap_data is None:
+            return None
+
+        stamp = self.costmap_data.header.stamp
+        if (
+            self._costmap_cache_array is not None
+            and self._costmap_cache_header_stamp == stamp
+        ):
+            return self._costmap_cache_array
+
+        w = self.costmap_data.info.width
+        h = self.costmap_data.info.height
+        self._costmap_cache_array = np.array(
+            self.costmap_data.data, dtype=np.int8
+        ).reshape((h, w))
+        self._costmap_cache_header_stamp = stamp
+        return self._costmap_cache_array
+
     # -------------------------------------------------------------------------
     #  Service availability probe  (Bug 3: 1 Hz, non-blocking)
     # -------------------------------------------------------------------------
@@ -336,15 +389,28 @@ class FrontierExplorer(Node):
             return None
 
     def _obstacle_in_sector(self) -> Tuple[bool, float]:
-        """Numpy-vectorised forward obstacle check."""
+        """
+        Perf 5: Numpy-vectorised forward obstacle check with cached arrays.
+        Caches the ranges/angles numpy conversion to avoid O(n) allocation
+        on every 5 Hz control-loop tick when scan data hasn't changed.
+        """
         scan = self.latest_scan
         if scan is None:
             return False, float("inf")
-        ranges = np.array(scan.ranges, dtype=np.float32)
-        angles = (
-            np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
-            + scan.angle_min
-        )
+
+        # Cache scan numpy arrays, keyed by header stamp
+        scan_stamp = scan.header.stamp
+        if self._scan_cache_seq != scan_stamp:
+            self._scan_cache_ranges = np.array(scan.ranges, dtype=np.float32)
+            self._scan_cache_angles = (
+                np.arange(len(scan.ranges), dtype=np.float32)
+                * scan.angle_increment
+                + scan.angle_min
+            )
+            self._scan_cache_seq = scan_stamp
+
+        ranges = self._scan_cache_ranges
+        angles = self._scan_cache_angles
         valid = (
             np.isfinite(ranges)
             & (ranges > 0.01)
@@ -391,15 +457,23 @@ class FrontierExplorer(Node):
         Uses int8 dtype: unknown=-1, free=0, occupied=1..100.
         Both _log_progress() and _explored_pct() delegate here (Bug 1 fix).
         Uses cached array to avoid redundant numpy conversions.
+
+        Perf 6: Uses np.bincount for single-pass counting instead of three
+        separate np.sum operations.
         """
         raw = self._get_map_array()
         if raw is None:
             return 0, 0, 0, 0.0
-        d    = raw.ravel()  # Flatten for counting (view, not copy)
-        free = int(np.sum(d == 0))
-        occ  = int(np.sum((d > 0) & (d <= 100)))
-        unk  = int(np.sum(d == -1))
-        pct  = (free + occ) / d.size * 100.0
+        d    = raw.ravel()
+        total = d.size
+        # Shift values: int8 -1→0, 0→1, 1→2, ..., 100→101
+        # so all values are non-negative for bincount
+        shifted = d.astype(np.int16) + 1
+        counts = np.bincount(shifted, minlength=102)
+        unk  = int(counts[0])          # original -1
+        free = int(counts[1])          # original  0
+        occ  = int(counts[2:102].sum())  # original 1..100
+        pct  = (free + occ) / total * 100.0
         return free, occ, unk, pct
 
     def _explored_pct(self) -> float:
@@ -474,8 +548,8 @@ class FrontierExplorer(Node):
                             labeled[ny, nx] = cluster_id
                             q.append((ny, nx))
 
-        # Convert to world coordinates + P1 inflation filter
-        frontiers: List[Frontier] = []
+        # Convert to world coordinates
+        candidates: List[Frontier] = []
         for cid, cells in clusters.items():
             n_cells = len(cells)
             if n_cells < self.p_min_frontier:
@@ -486,39 +560,65 @@ class FrontierExplorer(Node):
             mean_row = cells_arr[:, 1].mean()
             wx = mean_col * res + ox
             wy = mean_row * res + oy
-            if self._frontier_in_inflation(wx, wy):    # P1 filter
-                continue
-            frontiers.append(Frontier(wx, wy, n_cells))
+            candidates.append(Frontier(wx, wy, n_cells))
 
+        # Perf 8: Batch costmap inflation filter
+        frontiers = self._filter_frontiers_by_costmap(candidates)
         return frontiers
 
-    def _frontier_in_inflation(self, wx: float, wy: float) -> bool:
+    def _filter_frontiers_by_costmap(
+        self, frontiers: List[Frontier]
+    ) -> List[Frontier]:
         """
-        P1: Return True if the world point (wx, wy) falls inside an inflation
-        or lethal zone according to the Nav2 global costmap.
-        Frontiers inside such zones cannot be reached by the robot footprint
-        without colliding, so we discard them before scoring.
+        Perf 8: Batch-check all frontier centroids against the costmap
+        inflation zone in one vectorized numpy operation, replacing the
+        per-frontier _frontier_in_inflation() Python loop.
         """
+        if not frontiers:
+            return []
+
         cm = self.costmap_data
         if cm is None:
-            return False    # costmap not yet available: allow frontier through
+            return frontiers  # costmap not yet available: allow all through
+
+        cm_arr = self._get_costmap_array()
+        if cm_arr is None:
+            return frontiers
 
         res = cm.info.resolution
         ox  = cm.info.origin.position.x
         oy  = cm.info.origin.position.y
-        w   = cm.info.width
-        h   = cm.info.height
+        h, w = cm_arr.shape
 
-        col = int((wx - ox) / res)
-        row = int((wy - oy) / res)
+        # Build coordinate arrays for all frontiers at once
+        wx = np.array([f.cx for f in frontiers], dtype=np.float32)
+        wy = np.array([f.cy for f in frontiers], dtype=np.float32)
 
-        if not (0 <= col < w and 0 <= row < h):
-            return False    # outside costmap bounds: allow through
+        cols = ((wx - ox) / res).astype(np.int32)
+        rows = ((wy - oy) / res).astype(np.int32)
 
-        cost = cm.data[row * w + col]
-        # nav2 costmap: 0=free, 1-252=inflated, 253=inscribed, 254=lethal, 255=unknown
-        # We treat cost >= COSTMAP_LETHAL_THRESH as unreachable
-        return 0 <= cost < 255 and cost >= COSTMAP_LETHAL_THRESH
+        # Mask: inside costmap bounds
+        in_bounds = (cols >= 0) & (cols < w) & (rows >= 0) & (rows < h)
+
+        # For out-of-bounds frontiers, allow through (not in inflation)
+        in_inflation = np.zeros(len(frontiers), dtype=bool)
+
+        if np.any(in_bounds):
+            ib_rows = rows[in_bounds]
+            ib_cols = cols[in_bounds]
+            costs = cm_arr[ib_rows, ib_cols].astype(np.int16)
+            # The costmap array uses int8 dtype, so ROS values 128-255
+            # wrap to negative in int8. Cast to int16 to recover the
+            # original unsigned semantics for threshold comparison.
+            # nav2 costmap: 0=free, 1-252=inflated, 253=inscribed,
+            # 254=lethal, 255=unknown.  We filter >= COSTMAP_LETHAL_THRESH.
+            unsigned_costs = costs + np.int16(256) * (costs < 0)
+            in_inflation[in_bounds] = (
+                (unsigned_costs >= COSTMAP_LETHAL_THRESH)
+                & (unsigned_costs < 255)
+            )
+
+        return [f for f, blocked in zip(frontiers, in_inflation) if not blocked]
 
     # -------------------------------------------------------------------------
     #  Frontier scoring
@@ -542,11 +642,8 @@ class FrontierExplorer(Node):
         if not frontiers:
             return []
 
-        # Keep visited list bounded to avoid stale penalties
-        if len(self._visited) > 50:
-            trimmed = list(self._visited)[-30:]
-            self._visited.clear()
-            self._visited.extend(trimmed)
+        # Perf 9: Removed dead visited-list trimming code. The _visited
+        # deque has maxlen=24, so len() > 50 was unreachable.
 
         # Extract frontier coordinates as numpy arrays for vectorized computation
         n = len(frontiers)
