@@ -234,7 +234,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
-        self.declare_parameter("obstacle_dist",        0.45)
+        self.declare_parameter("obstacle_dist",        0.50)
         self.declare_parameter("obstacle_half_angle",  50.0)    # degrees
         self.declare_parameter("nav_timeout",          35.0)    # s
         self.declare_parameter("spin_speed",           0.55)    # rad/s

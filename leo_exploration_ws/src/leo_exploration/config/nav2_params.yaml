@@ -1,6 +1,11 @@
 # ============================================================================
 #  Nav2 Parameters — Leo Rover (RPLidar A2M12)
-#  ROS2 Jazzy  |  Differential Drive  |  445 × 424 mm footprint
+#  ROS2 Jazzy  |  Differential Drive  |  424 × 445 mm footprint
+#
+#  Robot dimensions from body drawing:
+#    Overall: 424 mm (X) x 445 mm (Y) x 303 mm (H)
+#    Wheel diameter: 129 mm, width: 65 mm
+#    LiDAR secured by mounting pillars (extra padding applied)
 #
 #  Global planner : NavFn (Dijkstra, allow_unknown=true)
 #  Local planner  : Regulated Pure Pursuit (RPP)
@@ -173,9 +178,10 @@ local_costmap:
       height: 3
       resolution: 0.05
       # Leo Rover polygon footprint (outer dimensions with wheels)
-      # 445 mm long × 424 mm wide → half sizes 0.2225 × 0.212 m
-      footprint: "[ [0.22, 0.21], [0.22, -0.21], [-0.22, -0.21], [-0.22, 0.21] ]"
-      footprint_padding: 0.02
+      # 424 mm long × 445 mm wide → half sizes 0.212 × 0.2225 m
+      # footprint_padding adds extra margin for LiDAR mounting pillars
+      footprint: "[ [0.212, 0.223], [0.212, -0.223], [-0.212, -0.223], [-0.212, 0.223] ]"
+      footprint_padding: 0.03
       plugins: ["obstacle_layer", "inflation_layer"]
 
       obstacle_layer:
@@ -196,7 +202,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40    # > robot half-width (0.212) + margin
+        inflation_radius: 0.45    # > robot half-diagonal (0.31 m) + pillar margin
 
       always_send_full_costmap: true
 
@@ -213,8 +219,8 @@ global_costmap:
       robot_base_frame: base_link
       resolution: 0.05
       track_unknown_space: true    # ← keep unknown cells as 255 in costmap
-      footprint: "[ [0.22, 0.21], [0.22, -0.21], [-0.22, -0.21], [-0.22, 0.21] ]"
-      footprint_padding: 0.02
+      footprint: "[ [0.212, 0.223], [0.212, -0.223], [-0.212, -0.223], [-0.212, 0.223] ]"
+      footprint_padding: 0.03
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
       static_layer:
@@ -241,7 +247,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
-        inflation_radius: 0.40
+        inflation_radius: 0.45
 
       always_send_full_costmap: true
 
