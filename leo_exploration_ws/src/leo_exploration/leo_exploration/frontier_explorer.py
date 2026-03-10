@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.3
+ROS2 Jazzy  |  v2.4
+
+Changelog v2.4 (stuck-loop & map-overlap fixes):
+  Fix 1  - Enlarged blacklist defaults: radius 1.0→2.0 m, duration 120→300 s,
+            capacity 50→100.  Covers wider unreachable regions.
+  Fix 2  - Adaptive blacklist radius: grows with consecutive failures so
+            repeated planning failures exclude progressively larger zones.
+  Fix 3  - Rebalanced scoring weights: info_gain 0.45→0.35, direction 0.15→0.25.
+            Increased visit penalty 0.40→0.55, visit radius 0.6→1.0 m.
+  Fix 4  - Failure-direction penalty: frontiers in the same bearing as recent
+            failed goals receive an additional score penalty.
+  Fix 5  - Score randomisation: after 2+ consecutive failures a small random
+            perturbation is added to promote frontier diversity.
+  Fix 6  - Recovery relocate: after the recovery spin the robot drives forward
+            briefly to physically change its vantage point.
+  Fix 7  - Reduced max_consec_fail 4→3 for faster recovery entry.
 
 Changelog v2.3 (frontier blacklisting):
   Bug 6  - Unreachable goal blacklist: when Nav2 fails to plan or navigate
             to a frontier, its coordinates are added to a time-decaying
-            blacklist. Frontiers within blacklist_radius (default 1.0 m) of
+            blacklist. Frontiers within blacklist_radius (default 2.0 m) of
             any blacklisted point are excluded from selection, preventing
             the robot from repeatedly targeting the same unreachable goal.
 
@@ -159,12 +174,13 @@ class FrontierExplorer(Node):
 
         # Recovery bookkeeping
         self._recov_t0: Optional[float] = None
+        self._recov_phase: int = 0   # 0=spin, 1=forward drive
 
         # Visited frontier history (bounded deque)
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
 
         # Blacklist for unreachable goals: (x, y, timestamp)
-        self._blacklist: Deque[Tuple[float, float, float]] = deque(maxlen=50)
+        self._blacklist: Deque[Tuple[float, float, float]] = deque(maxlen=100)
         self._current_goal: Optional[Tuple[float, float]] = None
 
         # Bug 4: ensure _state_complete executes exactly once
@@ -232,7 +248,7 @@ class FrontierExplorer(Node):
             "\n"
             "╔══════════════════════════════════════════════╗\n"
             "║  Leo Rover Frontier Explorer  (ROS2 Jazzy)   ║\n"
-            "║  v2.0  -  starting initial 360 spin...       ║\n"
+            "║  v2.4  -  starting initial 360 spin...       ║\n"
             "║  Publish False to /explore/enable to pause.  ║\n"
             "╚══════════════════════════════════════════════╝"
         )
@@ -254,14 +270,15 @@ class FrontierExplorer(Node):
         self.declare_parameter("backup_duration",      1.8)     # s
         self.declare_parameter("avoid_spin_duration",  2.5)     # s
         self.declare_parameter("recov_spin_duration",  7.0)     # s
-        self.declare_parameter("max_consec_fail",      4)
+        self.declare_parameter("max_consec_fail",      3)
         self.declare_parameter("costmap_clear_every",  3)
         self.declare_parameter("complete_no_frontier", 8)
         self.declare_parameter("log_interval",        12.0)     # s
         self.declare_parameter("save_map_on_complete", True)    # P2
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")  # P2
-        self.declare_parameter("blacklist_radius",     1.0)     # m
-        self.declare_parameter("blacklist_duration",   120.0)   # s
+        self.declare_parameter("blacklist_radius",     2.0)     # m
+        self.declare_parameter("blacklist_duration",   300.0)   # s
+        self.declare_parameter("recov_drive_duration", 2.0)     # s — forward drive after recovery spin
 
     def _load_params(self) -> None:
         g = self.get_parameter
@@ -285,6 +302,7 @@ class FrontierExplorer(Node):
         self.p_map_path       = g("map_save_path").value
         self.p_bl_radius      = g("blacklist_radius").value
         self.p_bl_duration    = g("blacklist_duration").value
+        self.p_recov_drive_dur = g("recov_drive_duration").value
 
     # -------------------------------------------------------------------------
     #  Callbacks
@@ -645,11 +663,15 @@ class FrontierExplorer(Node):
         rx: float, ry: float, ryaw: float,
     ) -> List[Frontier]:
         """
-        score = 0.45 * info_gain
-              + 0.35 * dist_score
-              + 0.15 * dir_score
+        score = 0.35 * info_gain
+              + 0.30 * dist_score
+              + 0.25 * dir_score
               - visit_penalty
+              - fail_dir_penalty
 
+        v2.4: Rebalanced weights (info 0.45→0.35, dir 0.15→0.25).
+        Added failure-direction penalty and score randomisation after
+        consecutive failures to break stuck-loops.
         Frontiers closer than 0.5m are FILTERED OUT entirely — sending
         a goal that close causes the controller to instantly report
         'Reached the goal' without actually moving.
@@ -681,11 +703,13 @@ class FrontierExplorer(Node):
             bl_arr = np.array(
                 [(x, y) for x, y, _ in self._blacklist], dtype=np.float32
             )
+            # Adaptive radius: grows with consecutive failures
+            adaptive_radius = self.p_bl_radius * (1.0 + 0.3 * self.consec_fail)
             dists_to_bl = np.sqrt(
                 (fx[:, np.newaxis] - bl_arr[:, 0]) ** 2
                 + (fy[:, np.newaxis] - bl_arr[:, 1]) ** 2
             )
-            valid_mask &= ~np.any(dists_to_bl < self.p_bl_radius, axis=1)
+            valid_mask &= ~np.any(dists_to_bl < adaptive_radius, axis=1)
 
         # Vectorized information gain (normalised cluster size)
         info_scores = np.minimum(1.0, sizes / 60.0)
@@ -705,26 +729,47 @@ class FrontierExplorer(Node):
         ))
         dir_scores = np.maximum(0.0, 1.0 - angle_diffs / np.pi)
 
-        # Vectorized revisit penalty computation
+        # Vectorized revisit penalty computation (v2.4: radius 0.6→1.0, pen 0.40→0.55)
         visit_pens = np.zeros(n, dtype=np.float32)
         if self._visited:
             visited_arr = np.array(list(self._visited), dtype=np.float32)
-            # Compute distances from each frontier to all visited points
-            # Shape: (n_frontiers, n_visited)
             dists_to_visited = np.sqrt(
                 (fx[:, np.newaxis] - visited_arr[:, 0]) ** 2 +
                 (fy[:, np.newaxis] - visited_arr[:, 1]) ** 2
             )
-            # Apply penalty if any visited point is within 0.6m
-            visit_pens = np.where(np.any(dists_to_visited < 0.6, axis=1), 0.40, 0.0)
+            visit_pens = np.where(np.any(dists_to_visited < 1.0, axis=1), 0.55, 0.0)
 
-        # Calculate final scores
+        # v2.4: Failure-direction penalty — penalise frontiers in the same
+        # bearing as recently blacklisted (failed) goals.
+        fail_dir_pens = np.zeros(n, dtype=np.float32)
+        if self._blacklist and self.consec_fail >= 1:
+            bl_arr = np.array(
+                [(x, y) for x, y, _ in self._blacklist], dtype=np.float32
+            )
+            bl_angles = np.arctan2(bl_arr[:, 1] - ry, bl_arr[:, 0] - rx)
+            # Angular difference between each frontier and each blacklisted goal
+            ang_to_bl = np.abs(np.arctan2(
+                np.sin(angles_to[:, np.newaxis] - bl_angles),
+                np.cos(angles_to[:, np.newaxis] - bl_angles),
+            ))
+            # Penalty if frontier is within 30° of any failed-goal bearing
+            near_fail_dir = np.any(ang_to_bl < 0.52, axis=1)  # ~30 degrees
+            fail_dir_pens = np.where(near_fail_dir, 0.25 * self.consec_fail, 0.0)
+
+        # Calculate final scores (v2.4: rebalanced weights)
         scores = (
-            0.45 * info_scores
-            + 0.35 * dist_scores
-            + 0.15 * dir_scores
+            0.35 * info_scores
+            + 0.30 * dist_scores
+            + 0.25 * dir_scores
             - visit_pens
+            - fail_dir_pens
         )
+
+        # v2.4: After 2+ consecutive failures, add small random perturbation
+        # to promote frontier diversity and break stuck-loops.
+        if self.consec_fail >= 2:
+            rng = np.random.default_rng()
+            scores += rng.uniform(-0.15, 0.15, size=n).astype(np.float32)
 
         # Build result list with only valid frontiers
         result: List[Frontier] = []
@@ -806,13 +851,16 @@ class FrontierExplorer(Node):
 
     def _blacklist_current_goal(self) -> None:
         """Add the current navigation goal to the blacklist so that nearby
-        frontiers are excluded from future selection until the entry expires."""
+        frontiers are excluded from future selection until the entry expires.
+        v2.4: adaptive radius grows with consecutive failures."""
         if self._current_goal is None:
             return
         gx, gy = self._current_goal
         self._blacklist.append((gx, gy, self._now_sec()))
+        adaptive_radius = self.p_bl_radius * (1.0 + 0.3 * self.consec_fail)
         self.get_logger().info(
-            f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f})"
+            f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f}) "
+            f"radius={adaptive_radius:.2f}m"
         )
 
     # -------------------------------------------------------------------------
@@ -1069,15 +1117,36 @@ class FrontierExplorer(Node):
     def _state_recovering(self, now: float) -> None:
         if self._recov_t0 is None:
             self._recov_t0 = now
+            self._recov_phase = 0
             self.get_logger().info("Recovery spin...")
 
-        if now - self._recov_t0 < self.p_recov_spin_dur:
-            self._spin()
+        if self._recov_phase == 0:
+            # Phase 0: spin to expose new frontiers
+            if now - self._recov_t0 < self.p_recov_spin_dur:
+                self._spin()
+            else:
+                self._stop()
+                self._recov_phase = 1
+                self._recov_t0 = now
+                self.get_logger().info("Recovery spin done — driving forward to relocate")
         else:
-            self._stop()
-            self._recov_t0 = None
-            self.get_logger().info("Recovery spin done")
-            self.state = State.SELECT_FRONTIER
+            # Phase 1: drive forward to physically move to a new vantage point
+            obs, dist = self._obstacle_in_sector()
+            if obs and dist < self.p_obs_dist:
+                # Obstacle ahead — skip forward drive
+                self._stop()
+                self._recov_t0 = None
+                self._recov_phase = 0
+                self.get_logger().info("Obstacle ahead — skipping recovery drive")
+                self.state = State.SELECT_FRONTIER
+            elif now - self._recov_t0 < self.p_recov_drive_dur:
+                self._drive(0.15)
+            else:
+                self._stop()
+                self._recov_t0 = None
+                self._recov_phase = 0
+                self.get_logger().info("Recovery relocate done")
+                self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: COMPLETE  (Bug 4: exactly-once guard)
