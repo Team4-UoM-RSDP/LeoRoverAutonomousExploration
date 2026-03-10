@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.4
+ROS2 Jazzy  |  v2.5
+
+Changelog v2.5 (anti-ghost-wall: TF jump detection):
+  Bug 13 - TF jump detection: monitors map→odom transform for sudden large
+            changes (>1m displacement or >30° rotation) caused by incorrect
+            SLAM loop closures. When detected, cancels navigation, clears
+            costmaps, and enters a cooldown period to let the map stabilize.
 
 Changelog v2.4 (adaptive blacklisting & scoring rebalance):
   Bug 7  - Adaptive blacklist radius: base radius (2.0 m) scales up with
@@ -211,6 +217,15 @@ class FrontierExplorer(Node):
 
         # RNG for score perturbation (Bug 11): reuse to avoid repeated instantiation
         self._rng = np.random.default_rng()
+
+        # Bug 13: TF jump detection — track map→odom transform for sudden changes
+        self._prev_map_odom_x:   Optional[float] = None
+        self._prev_map_odom_y:   Optional[float] = None
+        self._prev_map_odom_yaw: Optional[float] = None
+        self._tf_jump_cooldown_until: float = 0.0  # ROS time; skip frontier selection until this time
+        self._tf_jump_threshold_dist: float = 1.0  # metres — displacement threshold
+        self._tf_jump_threshold_yaw:  float = math.radians(30.0)  # radians — rotation threshold
+        self._tf_jump_cooldown_secs:  float = 5.0  # seconds to wait after a jump
 
         # TF
         self.tf_buf      = Buffer()
@@ -427,6 +442,57 @@ class FrontierExplorer(Node):
             return tx, ty, yaw
         except (LookupException, ConnectivityException, ExtrapolationException):
             return None
+
+    def _check_tf_jump(self) -> bool:
+        """
+        Bug 13: Check if map→odom transform has jumped significantly since last
+        tick.  A large jump indicates SLAM performed a (possibly incorrect)
+        loop closure that tore the map.  Returns True if a jump was detected.
+        """
+        try:
+            t = self.tf_buf.lookup_transform(
+                self.p_map_frame, "odom", rclpy.time.Time()
+            )
+        except (LookupException, ConnectivityException, ExtrapolationException):
+            return False
+
+        x   = t.transform.translation.x
+        y   = t.transform.translation.y
+        q   = t.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+
+        if self._prev_map_odom_x is None:
+            # First reading — store and return no jump
+            self._prev_map_odom_x   = x
+            self._prev_map_odom_y   = y
+            self._prev_map_odom_yaw = yaw
+            return False
+
+        dx   = x - self._prev_map_odom_x
+        dy   = y - self._prev_map_odom_y
+        dist = math.hypot(dx, dy)
+        dyaw = abs(math.atan2(
+            math.sin(yaw - self._prev_map_odom_yaw),
+            math.cos(yaw - self._prev_map_odom_yaw),
+        ))
+
+        # Update stored values
+        self._prev_map_odom_x   = x
+        self._prev_map_odom_y   = y
+        self._prev_map_odom_yaw = yaw
+
+        if dist > self._tf_jump_threshold_dist or dyaw > self._tf_jump_threshold_yaw:
+            self.get_logger().warn(
+                f"⚠ TF JUMP detected!  map→odom shifted "
+                f"{dist:.2f}m / {math.degrees(dyaw):.1f}° — "
+                f"possible bad loop closure.  Entering cooldown."
+            )
+            return True
+
+        return False
 
     def _obstacle_in_sector(self) -> Tuple[bool, float]:
         """
@@ -969,6 +1035,24 @@ class FrontierExplorer(Node):
             return    # P2: paused
 
         now = self._now_sec()   # Bug 5: ROS clock
+
+        # Bug 13: TF jump detection — react to SLAM map corrections
+        if self._check_tf_jump():
+            # Cancel any active navigation
+            if self._goal_handle is not None:
+                self.get_logger().info("Cancelling navigation due to TF jump")
+                self._cancel_nav()
+            # Clear costmaps to remove stale data
+            self._clear_costmaps()
+            # Set cooldown: do not select a new frontier until map stabilises
+            self._tf_jump_cooldown_until = now + self._tf_jump_cooldown_secs
+            self.state = State.SELECT_FRONTIER
+            return
+
+        # Bug 13: skip processing during cooldown
+        if now < self._tf_jump_cooldown_until:
+            return
+
         {
             State.INIT_SPIN:       self._state_init_spin,
             State.SELECT_FRONTIER: self._state_select,
