@@ -88,10 +88,7 @@
     </model>
 
     <!-- ═══════════════════════════════════════════════════════════════
-         Outer walls  (12 x 12 m room, wall thickness 0.4 m, height 2.5 m)
-         Thickness doubled from 0.2 → 0.4 m to prevent GPU LiDAR rays
-         from penetrating at shallow incidence angles.
-         Wall length 12.8 m ensures solid overlap at corners.
+         Outer walls  (12 x 12 m room, wall thickness 0.2 m, height 2.5 m)
          Named: wall_N, wall_S, wall_E, wall_W
     ═══════════════════════════════════════════════════════════════════ -->
 
@@ -100,9 +97,9 @@
       <static>true</static>
       <pose>0 6 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>12.8 0.4 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>12.4 0.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>12.8 0.4 2.5</size></box></geometry>
+          <geometry><box><size>12.4 0.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
@@ -113,9 +110,9 @@
       <static>true</static>
       <pose>0 -6 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>12.8 0.4 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>12.4 0.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>12.8 0.4 2.5</size></box></geometry>
+          <geometry><box><size>12.4 0.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
@@ -126,9 +123,9 @@
       <static>true</static>
       <pose>6 0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>0.4 12.8 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>0.2 12.4 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.4 12.8 2.5</size></box></geometry>
+          <geometry><box><size>0.2 12.4 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
@@ -139,9 +136,9 @@
       <static>true</static>
       <pose>-6 0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>0.4 12.8 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>0.2 12.4 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.4 12.8 2.5</size></box></geometry>
+          <geometry><box><size>0.2 12.4 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>

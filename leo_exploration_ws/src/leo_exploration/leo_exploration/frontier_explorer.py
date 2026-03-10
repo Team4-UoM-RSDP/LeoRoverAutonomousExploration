@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
+<<<<<<< HEAD
 ROS2 Jazzy  |  v2.7
 
 Changelog v2.7 (too-close oscillation escape):
@@ -28,6 +29,9 @@ Changelog v2.5 (LiDAR wall-penetration mitigation):
             Paired with URDF sensor range reduction (12 → 8 m), SLAM Toolbox
             max_laser_range reduction (12 → 8 m), and thicker Gazebo walls
             (0.2 → 0.4 m) to eliminate false free-space beyond room boundaries.
+=======
+ROS2 Jazzy  |  v2.4
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 
 Changelog v2.4 (adaptive blacklisting & scoring rebalance):
   Bug 7  - Adaptive blacklist radius: base radius (2.0 m) scales up with
@@ -322,8 +326,11 @@ class FrontierExplorer(Node):
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")  # P2
         self.declare_parameter("blacklist_radius",     2.0)     # m
         self.declare_parameter("blacklist_duration",   300.0)   # s
+<<<<<<< HEAD
         self.declare_parameter("max_scan_range",       8.0)     # m — clip readings beyond this
         self.declare_parameter("retreat_timeout",      60.0)    # s — retreat navigation timeout
+=======
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 
     def _load_params(self) -> None:
         g = self.get_parameter
@@ -347,8 +354,11 @@ class FrontierExplorer(Node):
         self.p_map_path       = g("map_save_path").value
         self.p_bl_radius      = g("blacklist_radius").value
         self.p_bl_duration    = g("blacklist_duration").value
+<<<<<<< HEAD
         self.p_max_scan_range = g("max_scan_range").value
         self.p_retreat_timeout = g("retreat_timeout").value
+=======
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 
     # -------------------------------------------------------------------------
     #  Callbacks
@@ -493,7 +503,6 @@ class FrontierExplorer(Node):
         valid = (
             np.isfinite(ranges)
             & (ranges > 0.01)
-            & (ranges <= self.p_max_scan_range)
             & (np.abs(angles) <= self.p_obs_half_angle)
         )
         if not np.any(valid):
