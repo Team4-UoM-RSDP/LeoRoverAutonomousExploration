@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.2
+ROS2 Jazzy  |  v2.3
+
+Changelog v2.3 (frontier blacklisting):
+  Bug 6  - Unreachable goal blacklist: when Nav2 fails to plan or navigate
+            to a frontier, its coordinates are added to a time-decaying
+            blacklist. Frontiers within blacklist_radius (default 1.0 m) of
+            any blacklisted point are excluded from selection, preventing
+            the robot from repeatedly targeting the same unreachable goal.
 
 Changelog v2.2 (performance optimizations round 2):
   Perf 5 - Scan array caching: _obstacle_in_sector() caches numpy arrays
@@ -156,6 +163,10 @@ class FrontierExplorer(Node):
         # Visited frontier history (bounded deque)
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
 
+        # Blacklist for unreachable goals: (x, y, timestamp)
+        self._blacklist: Deque[Tuple[float, float, float]] = deque(maxlen=50)
+        self._current_goal: Optional[Tuple[float, float]] = None
+
         # Bug 4: ensure _state_complete executes exactly once
         self._completed: bool = False
 
@@ -249,6 +260,8 @@ class FrontierExplorer(Node):
         self.declare_parameter("log_interval",        12.0)     # s
         self.declare_parameter("save_map_on_complete", True)    # P2
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")  # P2
+        self.declare_parameter("blacklist_radius",     1.0)     # m
+        self.declare_parameter("blacklist_duration",   120.0)   # s
 
     def _load_params(self) -> None:
         g = self.get_parameter
@@ -270,6 +283,8 @@ class FrontierExplorer(Node):
         self.p_log_interval   = g("log_interval").value
         self.p_save_map       = g("save_map_on_complete").value
         self.p_map_path       = g("map_save_path").value
+        self.p_bl_radius      = g("blacklist_radius").value
+        self.p_bl_duration    = g("blacklist_duration").value
 
     # -------------------------------------------------------------------------
     #  Callbacks
@@ -657,6 +672,21 @@ class FrontierExplorer(Node):
         # Filter out frontiers too close (< 0.5m)
         valid_mask = dists >= 0.5
 
+        # Filter out frontiers near blacklisted (unreachable) goals
+        now = self._now_sec()
+        # Prune expired blacklist entries
+        while self._blacklist and (now - self._blacklist[0][2]) > self.p_bl_duration:
+            self._blacklist.popleft()
+        if self._blacklist:
+            bl_arr = np.array(
+                [(x, y) for x, y, _ in self._blacklist], dtype=np.float32
+            )
+            dists_to_bl = np.sqrt(
+                (fx[:, np.newaxis] - bl_arr[:, 0]) ** 2
+                + (fy[:, np.newaxis] - bl_arr[:, 1]) ** 2
+            )
+            valid_mask &= ~np.any(dists_to_bl < self.p_bl_radius, axis=1)
+
         # Vectorized information gain (normalised cluster size)
         info_scores = np.minimum(1.0, sizes / 60.0)
 
@@ -725,6 +755,7 @@ class FrontierExplorer(Node):
         self._nav_done = False
         self._nav_ok   = False
         self._nav_t0   = self._now_sec()   # Bug 5: ROS clock
+        self._current_goal = (fx, fy)
 
         fut = self._nav_ac.send_goal_async(goal)
         fut.add_done_callback(self._goal_resp_cb)
@@ -772,6 +803,17 @@ class FrontierExplorer(Node):
             self._clear_global.call_async(req)
         else:
             self.get_logger().warn("Global costmap clear service not ready")
+
+    def _blacklist_current_goal(self) -> None:
+        """Add the current navigation goal to the blacklist so that nearby
+        frontiers are excluded from future selection until the entry expires."""
+        if self._current_goal is None:
+            return
+        gx, gy = self._current_goal
+        self._blacklist.append((gx, gy, self._now_sec()))
+        self.get_logger().info(
+            f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f})"
+        )
 
     # -------------------------------------------------------------------------
     #  Map save  (P2)
@@ -971,9 +1013,11 @@ class FrontierExplorer(Node):
         if self._nav_done:
             if self._nav_ok:
                 self.consec_fail = 0
+                self._current_goal = None
             else:
                 self.consec_fail += 1
                 self.total_fail  += 1
+                self._blacklist_current_goal()
             self._nav_done = False
             self.state = State.SELECT_FRONTIER
             return
@@ -987,6 +1031,7 @@ class FrontierExplorer(Node):
             self._cancel_nav()
             self.consec_fail += 1
             self.total_fail  += 1
+            self._blacklist_current_goal()
             self._nav_done    = False
             self.state = State.SELECT_FRONTIER
 
@@ -1014,6 +1059,7 @@ class FrontierExplorer(Node):
                 self._stop()
                 self.get_logger().info("Avoidance manoeuvre complete")
                 self.consec_fail += 1
+                self._blacklist_current_goal()
                 self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
