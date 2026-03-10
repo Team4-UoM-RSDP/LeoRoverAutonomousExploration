@@ -100,6 +100,13 @@ from tf2_ros import (
 # Costmap threshold: cells with cost >= this are in inflation / lethal zone
 COSTMAP_LETHAL_THRESH = 70   # range 0-100 (nav2 scale)
 
+# v2.4 tuning constants
+_ADAPTIVE_BL_GROWTH   = 0.3    # blacklist radius grows by this factor per consec failure
+_FAIL_DIR_ANGLE_THRESH = 0.52  # ~30 degrees — angular threshold for fail-direction penalty
+_FAIL_DIR_PENALTY_WT   = 0.25  # per-consec-failure weight of the fail-direction penalty
+_SCORE_RANDOM_RANGE    = 0.15  # ± random perturbation added after 2+ consecutive failures
+_RECOV_DRIVE_SPEED     = 0.15  # m/s — forward speed during recovery relocation
+
 
 # =============================================================================
 #  State machine
@@ -704,7 +711,7 @@ class FrontierExplorer(Node):
                 [(x, y) for x, y, _ in self._blacklist], dtype=np.float32
             )
             # Adaptive radius: grows with consecutive failures
-            adaptive_radius = self.p_bl_radius * (1.0 + 0.3 * self.consec_fail)
+            adaptive_radius = self.p_bl_radius * (1.0 + _ADAPTIVE_BL_GROWTH * self.consec_fail)
             dists_to_bl = np.sqrt(
                 (fx[:, np.newaxis] - bl_arr[:, 0]) ** 2
                 + (fy[:, np.newaxis] - bl_arr[:, 1]) ** 2
@@ -752,9 +759,9 @@ class FrontierExplorer(Node):
                 np.sin(angles_to[:, np.newaxis] - bl_angles),
                 np.cos(angles_to[:, np.newaxis] - bl_angles),
             ))
-            # Penalty if frontier is within 30° of any failed-goal bearing
-            near_fail_dir = np.any(ang_to_bl < 0.52, axis=1)  # ~30 degrees
-            fail_dir_pens = np.where(near_fail_dir, 0.25 * self.consec_fail, 0.0)
+            # Penalty if frontier is within fail-direction angle of any failed-goal bearing
+            near_fail_dir = np.any(ang_to_bl < _FAIL_DIR_ANGLE_THRESH, axis=1)
+            fail_dir_pens = np.where(near_fail_dir, _FAIL_DIR_PENALTY_WT * self.consec_fail, 0.0)
 
         # Calculate final scores (v2.4: rebalanced weights)
         scores = (
@@ -769,7 +776,7 @@ class FrontierExplorer(Node):
         # to promote frontier diversity and break stuck-loops.
         if self.consec_fail >= 2:
             rng = np.random.default_rng()
-            scores += rng.uniform(-0.15, 0.15, size=n).astype(np.float32)
+            scores += rng.uniform(-_SCORE_RANDOM_RANGE, _SCORE_RANDOM_RANGE, size=n).astype(np.float32)
 
         # Build result list with only valid frontiers
         result: List[Frontier] = []
@@ -857,7 +864,7 @@ class FrontierExplorer(Node):
             return
         gx, gy = self._current_goal
         self._blacklist.append((gx, gy, self._now_sec()))
-        adaptive_radius = self.p_bl_radius * (1.0 + 0.3 * self.consec_fail)
+        adaptive_radius = self.p_bl_radius * (1.0 + _ADAPTIVE_BL_GROWTH * self.consec_fail)
         self.get_logger().info(
             f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f}) "
             f"radius={adaptive_radius:.2f}m"
@@ -1140,7 +1147,7 @@ class FrontierExplorer(Node):
                 self.get_logger().info("Obstacle ahead — skipping recovery drive")
                 self.state = State.SELECT_FRONTIER
             elif now - self._recov_t0 < self.p_recov_drive_dur:
-                self._drive(0.15)
+                self._drive(_RECOV_DRIVE_SPEED)
             else:
                 self._stop()
                 self._recov_t0 = None
