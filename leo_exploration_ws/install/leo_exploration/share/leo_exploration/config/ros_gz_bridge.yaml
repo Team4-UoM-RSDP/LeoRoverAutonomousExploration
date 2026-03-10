@@ -1,0 +1,52 @@
+# ros_gz_bridge topic configuration
+# Maps Gazebo Harmonic internal topics <-> ROS2 topics
+#
+# Direction:
+#   GZ_TO_ROS: Gazebo publishes, ROS2 subscribes
+#   ROS_TO_GZ: ROS2 publishes, Gazebo subscribes
+#   BIDIRECTIONAL: both directions
+#
+# This file is used by sim_exploration_launch.py
+# See: https://github.com/gazebosim/ros_gz/tree/ros2/ros_gz_bridge
+
+# ── Clock (sim time) ──────────────────────────────────────────────────────────
+- ros_topic_name: /clock
+  gz_topic_name: /clock
+  ros_type_name: rosgraph_msgs/msg/Clock
+  gz_type_name: gz.msgs.Clock
+  direction: GZ_TO_ROS
+
+# ── Laser scan ────────────────────────────────────────────────────────────────
+- ros_topic_name: /scan
+  gz_topic_name: /scan_gz
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+# ── Odometry ──────────────────────────────────────────────────────────────────
+- ros_topic_name: /odom
+  gz_topic_name: /odom
+  ros_type_name: nav_msgs/msg/Odometry
+  gz_type_name: gz.msgs.Odometry
+  direction: GZ_TO_ROS
+
+# ── Command velocity ──────────────────────────────────────────────────────────
+- ros_topic_name: /cmd_vel
+  gz_topic_name: /cmd_vel
+  ros_type_name: geometry_msgs/msg/Twist
+  gz_type_name: gz.msgs.Twist
+  direction: ROS_TO_GZ
+
+# ── TF (from DiffDrive plugin: odom -> base_link) ─────────────────────────────
+- ros_topic_name: /tf
+  gz_topic_name: /tf
+  ros_type_name: tf2_msgs/msg/TFMessage
+  gz_type_name: gz.msgs.Pose_V
+  direction: GZ_TO_ROS
+
+# ── Joint states (for robot_state_publisher) ─────────────────────────────────
+- ros_topic_name: /joint_states
+  gz_topic_name: /joint_states
+  ros_type_name: sensor_msgs/msg/JointState
+  gz_type_name: gz.msgs.Model
+  direction: GZ_TO_ROS

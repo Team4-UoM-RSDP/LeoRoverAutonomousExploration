@@ -1,0 +1,50 @@
+running egg_info
+creating ../../build/leo_exploration/leo_exploration.egg-info
+writing ../../build/leo_exploration/leo_exploration.egg-info/PKG-INFO
+writing dependency_links to ../../build/leo_exploration/leo_exploration.egg-info/dependency_links.txt
+writing entry points to ../../build/leo_exploration/leo_exploration.egg-info/entry_points.txt
+writing requirements to ../../build/leo_exploration/leo_exploration.egg-info/requires.txt
+writing top-level names to ../../build/leo_exploration/leo_exploration.egg-info/top_level.txt
+writing manifest file '../../build/leo_exploration/leo_exploration.egg-info/SOURCES.txt'
+reading manifest file '../../build/leo_exploration/leo_exploration.egg-info/SOURCES.txt'
+writing manifest file '../../build/leo_exploration/leo_exploration.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib/leo_exploration
+copying leo_exploration/frontier_explorer.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib/leo_exploration
+copying leo_exploration/__init__.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib/leo_exploration
+running install
+running install_lib
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration
+copying /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib/leo_exploration/frontier_explorer.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration
+copying /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/build/lib/leo_exploration/__init__.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration
+byte-compiling /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration/frontier_explorer.py to frontier_explorer.cpython-312.pyc
+byte-compiling /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration/__init__.py to __init__.cpython-312.pyc
+running install_data
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/ament_index
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/ament_index/resource_index
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/ament_index/resource_index/packages
+copying resource/leo_exploration -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/ament_index/resource_index/packages
+copying package.xml -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/launch
+copying launch/sim_exploration_launch.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/launch
+copying launch/exploration_launch.py -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/launch
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/config
+copying config/nav2_params.yaml -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/config
+copying config/slam_toolbox_params.yaml -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/config
+copying config/rviz2_config.rviz -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/config
+copying config/ros_gz_bridge.yaml -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/config
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/worlds
+copying worlds/exploration_test.world -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/worlds
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/urdf
+copying urdf/leo_rover.urdf -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/urdf
+creating /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/scripts
+copying scripts/install_sim_deps.sh -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/scripts
+copying scripts/obstacle_manager.sh -> /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/share/leo_exploration/scripts
+running install_egg_info
+Copying ../../build/leo_exploration/leo_exploration.egg-info to /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/python3.12/site-packages/leo_exploration-2.6.0-py3.12.egg-info
+running install_scripts
+Installing frontier_explorer script to /home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/install/leo_exploration/lib/leo_exploration
+writing list of installed files to '/home/student33/LeoRoverAutonomousExploration-main/leo_exploration_ws/build/leo_exploration/install.log'
