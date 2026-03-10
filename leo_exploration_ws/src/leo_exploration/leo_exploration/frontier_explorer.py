@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.5
+ROS2 Jazzy  |  v2.6
+
+Changelog v2.6 (stuck-in-corner escape):
+  Bug 14 - RETREATING state: when the robot accumulates too many consecutive
+            navigation failures (indicating it is trapped in a confined space),
+            it now attempts to navigate back to the farthest previously visited
+            location rather than only spinning in place.  Combined with
+            allow_reversing=true in the RPP controller, this lets the robot
+            drive backward out of dead-ends and corners.
 
 Changelog v2.5 (LiDAR wall-penetration mitigation):
   Bug 13 - Added max_scan_range parameter (default 8.0 m): obstacle detection
@@ -123,6 +131,7 @@ class State(Enum):
     NAVIGATING      = auto()   # Waiting for Nav2 to reach goal
     AVOIDING        = auto()   # Composite avoidance: back-up then spin
     RECOVERING      = auto()   # Slow spin to expose new frontiers
+    RETREATING      = auto()   # Navigate back to open area when stuck
     COMPLETE        = auto()   # All frontiers exhausted
 
 
@@ -196,6 +205,10 @@ class FrontierExplorer(Node):
 
         # Failure-direction tracking: list of (bearing_rad, timestamp)
         self._failed_bearings: Deque[Tuple[float, float]] = deque(maxlen=100)
+
+        # Retreat bookkeeping (Bug 14: stuck-in-corner escape)
+        self._retreat_goal: Optional[Tuple[float, float]] = None
+        self._retreat_t0: Optional[float] = None
 
         # Bug 4: ensure _state_complete executes exactly once
         self._completed: bool = False
@@ -296,6 +309,7 @@ class FrontierExplorer(Node):
         self.declare_parameter("blacklist_radius",     2.0)     # m
         self.declare_parameter("blacklist_duration",   300.0)   # s
         self.declare_parameter("max_scan_range",       8.0)     # m — clip readings beyond this
+        self.declare_parameter("retreat_timeout",      60.0)    # s — retreat navigation timeout
 
     def _load_params(self) -> None:
         g = self.get_parameter
@@ -320,6 +334,7 @@ class FrontierExplorer(Node):
         self.p_bl_radius      = g("blacklist_radius").value
         self.p_bl_duration    = g("blacklist_duration").value
         self.p_max_scan_range = g("max_scan_range").value
+        self.p_retreat_timeout = g("retreat_timeout").value
 
     # -------------------------------------------------------------------------
     #  Callbacks
@@ -986,6 +1001,7 @@ class FrontierExplorer(Node):
             State.NAVIGATING:      self._state_navigating,
             State.AVOIDING:        self._state_avoiding,
             State.RECOVERING:      self._state_recovering,
+            State.RETREATING:      self._state_retreating,
             State.COMPLETE:        self._state_complete,
         }[self.state](now)
 
@@ -1043,9 +1059,20 @@ class FrontierExplorer(Node):
         self.recov_spins = 0
 
         if self.consec_fail >= self.p_max_consec:
-            self.get_logger().warn("Too many consecutive failures - recovery spin")
-            self.consec_fail = 0
-            self.state = State.RECOVERING
+            # Bug 14: attempt retreat to a previously visited open area
+            if len(self._visited) >= 2:
+                self.get_logger().warn(
+                    "Too many consecutive failures — attempting retreat"
+                )
+                self.consec_fail = 0
+                self._retreat_goal = None   # reset so retreating picks a target
+                self.state = State.RETREATING
+            else:
+                self.get_logger().warn(
+                    "Too many consecutive failures — recovery spin"
+                )
+                self.consec_fail = 0
+                self.state = State.RECOVERING
             return
 
         scored = self._score_frontiers(raw_frontiers, rx, ry, ryaw)
@@ -1157,6 +1184,94 @@ class FrontierExplorer(Node):
             self._recov_t0 = None
             self.get_logger().info("Recovery spin done")
             self.state = State.SELECT_FRONTIER
+
+    # -------------------------------------------------------------------------
+    #  State: RETREATING  (Bug 14: stuck-in-corner escape)
+    # -------------------------------------------------------------------------
+
+    def _state_retreating(self, now: float) -> None:
+        """Navigate back to a previously visited open area to escape
+        a confined dead-end.  On entry *_retreat_goal* is None; we pick
+        the farthest visited point, send a Nav2 goal, then monitor it
+        with a generous timeout.  Falls back to RECOVERING on failure."""
+
+        # ----- first tick: select retreat target and dispatch goal -----
+        if self._retreat_goal is None:
+            pose = self._robot_in_map()
+            if pose is None:
+                self.state = State.RECOVERING
+                return
+            rx, ry, _ = pose
+
+            # Pick the farthest previously visited point
+            best_dist = 0.0
+            best_pt: Optional[Tuple[float, float]] = None
+            for vx, vy in self._visited:
+                d = math.hypot(vx - rx, vy - ry)
+                if d > best_dist:
+                    best_dist = d
+                    best_pt = (vx, vy)
+
+            if best_pt is None or best_dist < 1.0:
+                self.get_logger().warn(
+                    "No suitable retreat point — falling back to recovery spin"
+                )
+                self.state = State.RECOVERING
+                return
+
+            self._retreat_goal = best_pt
+            self._retreat_t0   = now
+            self._clear_costmaps()
+            self.get_logger().info(
+                f"Retreating to ({best_pt[0]:.2f}, {best_pt[1]:.2f}) "
+                f"dist={best_dist:.1f}m"
+            )
+            if not self._send_goal(best_pt[0], best_pt[1]):
+                self._retreat_goal = None
+                self.state = State.RECOVERING
+            return
+
+        # ----- subsequent ticks: monitor retreat navigation -----
+
+        # Emergency obstacle avoidance while retreating
+        obs, dist = self._obstacle_in_sector()
+        if obs and dist < self.p_obs_dist * 0.65:
+            self.get_logger().warn(
+                f"Obstacle at {dist:.2f} m during retreat — avoidance"
+            )
+            self._cancel_nav()
+            self._retreat_goal = None
+            self._avoid_t0    = now
+            self._avoid_phase = 0
+            self.state = State.AVOIDING
+            return
+
+        if self._nav_done:
+            if self._nav_ok:
+                self.get_logger().info(
+                    "Retreat succeeded — resuming exploration"
+                )
+                self.consec_fail = 0
+            else:
+                self.get_logger().warn(
+                    "Retreat navigation failed — recovery spin"
+                )
+                self.consec_fail = 0
+            self._retreat_goal = None
+            self._nav_done = False
+            self.state = State.SELECT_FRONTIER
+            return
+
+        # Timeout (generous: configurable via retreat_timeout, default 60 s)
+        if (
+            self._retreat_t0 is not None
+            and (now - self._retreat_t0) > self.p_retreat_timeout
+        ):
+            self.get_logger().warn("Retreat navigation timeout")
+            self._cancel_nav()
+            self._retreat_goal = None
+            self._nav_done = False
+            self.state = State.RECOVERING
 
     # -------------------------------------------------------------------------
     #  State: COMPLETE  (Bug 4: exactly-once guard)

@@ -6,7 +6,7 @@ package_name = "leo_exploration"
 
 setup(
     name=package_name,
-    version="2.5.0",
+    version="2.6.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages",
@@ -27,7 +27,7 @@ setup(
     zip_safe=True,
     maintainer="You",
     maintainer_email="you@example.com",
-    description="Frontier-based autonomous exploration for Leo Rover (ROS2 Jazzy) v2.5",
+    description="Frontier-based autonomous exploration for Leo Rover (ROS2 Jazzy) v2.6",
     license="MIT",
     tests_require=["pytest"],
     entry_points={
