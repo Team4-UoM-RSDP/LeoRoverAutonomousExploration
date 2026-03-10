@@ -96,7 +96,7 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5
+      tolerance: 0.75
       use_astar: false        # Dijkstra — more complete in unknown space
       allow_unknown: true     # ← crucial for exploration
 

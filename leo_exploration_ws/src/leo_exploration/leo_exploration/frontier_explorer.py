@@ -1,7 +1,26 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v2.3
+ROS2 Jazzy  |  v2.4
+
+Changelog v2.4 (adaptive blacklisting & scoring rebalance):
+  Bug 7  - Adaptive blacklist radius: base radius (2.0 m) scales up with
+            consecutive failures via factor (1 + 0.3 * consec_fail), so the
+            robot avoids wider areas around repeatedly unreachable goals.
+  Bug 8  - Failure-direction penalty: bearings toward failed goals are
+            tracked; frontiers within 30° of a recent failure bearing are
+            penalised, preventing the robot from circling in the same
+            direction.
+  Bug 9  - Scoring weight rebalance: info_gain 0.45→0.35, distance
+            0.35→0.30, direction 0.15→0.25.  Increased direction weight
+            steers the robot toward unexplored headings rather than fixating
+            on high-info-gain frontiers that may be unreachable.
+  Bug 10 - Stronger revisit penalty: 0.40 within 0.6 m → 0.55 within
+            1.0 m.  Discourages circling over already-visited territory.
+  Bug 11 - Random score perturbation (±0.15) after 2+ consecutive failures
+            breaks deterministic re-selection of the same frontier.
+  Bug 12 - Blacklist capacity raised 50→100, duration 120→300 s, default
+            radius 1.0→2.0 m for more effective exclusion of stuck regions.
 
 Changelog v2.3 (frontier blacklisting):
   Bug 6  - Unreachable goal blacklist: when Nav2 fails to plan or navigate
@@ -164,8 +183,11 @@ class FrontierExplorer(Node):
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
 
         # Blacklist for unreachable goals: (x, y, timestamp)
-        self._blacklist: Deque[Tuple[float, float, float]] = deque(maxlen=50)
+        self._blacklist: Deque[Tuple[float, float, float]] = deque(maxlen=100)
         self._current_goal: Optional[Tuple[float, float]] = None
+
+        # Failure-direction tracking: list of (bearing_rad, timestamp)
+        self._failed_bearings: Deque[Tuple[float, float]] = deque(maxlen=100)
 
         # Bug 4: ensure _state_complete executes exactly once
         self._completed: bool = False
@@ -186,6 +208,9 @@ class FrontierExplorer(Node):
         self._scan_cache_seq: Optional[int] = None
         self._scan_cache_ranges: Optional[np.ndarray] = None
         self._scan_cache_angles: Optional[np.ndarray] = None
+
+        # RNG for score perturbation (Bug 11): reuse to avoid repeated instantiation
+        self._rng = np.random.default_rng()
 
         # TF
         self.tf_buf      = Buffer()
@@ -260,8 +285,8 @@ class FrontierExplorer(Node):
         self.declare_parameter("log_interval",        12.0)     # s
         self.declare_parameter("save_map_on_complete", True)    # P2
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")  # P2
-        self.declare_parameter("blacklist_radius",     1.0)     # m
-        self.declare_parameter("blacklist_duration",   120.0)   # s
+        self.declare_parameter("blacklist_radius",     2.0)     # m
+        self.declare_parameter("blacklist_duration",   300.0)   # s
 
     def _load_params(self) -> None:
         g = self.get_parameter
@@ -645,10 +670,11 @@ class FrontierExplorer(Node):
         rx: float, ry: float, ryaw: float,
     ) -> List[Frontier]:
         """
-        score = 0.45 * info_gain
-              + 0.35 * dist_score
-              + 0.15 * dir_score
+        score = 0.35 * info_gain
+              + 0.30 * dist_score
+              + 0.25 * dir_score
               - visit_penalty
+              - fail_dir_penalty
 
         Frontiers closer than 0.5m are FILTERED OUT entirely — sending
         a goal that close causes the controller to instantly report
@@ -673,10 +699,12 @@ class FrontierExplorer(Node):
         valid_mask = dists >= 0.5
 
         # Filter out frontiers near blacklisted (unreachable) goals
+        # Bug 7: adaptive blacklist radius scales with consecutive failures
         now = self._now_sec()
         # Prune expired blacklist entries
         while self._blacklist and (now - self._blacklist[0][2]) > self.p_bl_duration:
             self._blacklist.popleft()
+        adaptive_bl_radius = self.p_bl_radius * (1.0 + 0.3 * self.consec_fail)
         if self._blacklist:
             bl_arr = np.array(
                 [(x, y) for x, y, _ in self._blacklist], dtype=np.float32
@@ -685,7 +713,7 @@ class FrontierExplorer(Node):
                 (fx[:, np.newaxis] - bl_arr[:, 0]) ** 2
                 + (fy[:, np.newaxis] - bl_arr[:, 1]) ** 2
             )
-            valid_mask &= ~np.any(dists_to_bl < self.p_bl_radius, axis=1)
+            valid_mask &= ~np.any(dists_to_bl < adaptive_bl_radius, axis=1)
 
         # Vectorized information gain (normalised cluster size)
         info_scores = np.minimum(1.0, sizes / 60.0)
@@ -706,6 +734,7 @@ class FrontierExplorer(Node):
         dir_scores = np.maximum(0.0, 1.0 - angle_diffs / np.pi)
 
         # Vectorized revisit penalty computation
+        # Bug 10: stronger penalty 0.55 within 1.0 m
         visit_pens = np.zeros(n, dtype=np.float32)
         if self._visited:
             visited_arr = np.array(list(self._visited), dtype=np.float32)
@@ -715,16 +744,43 @@ class FrontierExplorer(Node):
                 (fx[:, np.newaxis] - visited_arr[:, 0]) ** 2 +
                 (fy[:, np.newaxis] - visited_arr[:, 1]) ** 2
             )
-            # Apply penalty if any visited point is within 0.6m
-            visit_pens = np.where(np.any(dists_to_visited < 0.6, axis=1), 0.40, 0.0)
+            # Apply penalty if any visited point is within 1.0m
+            visit_pens = np.where(np.any(dists_to_visited < 1.0, axis=1), 0.55, 0.0)
 
-        # Calculate final scores
+        # Bug 8: failure-direction penalty
+        # Prune expired failure bearings (same duration as blacklist)
+        while (self._failed_bearings
+               and (now - self._failed_bearings[0][1]) > self.p_bl_duration):
+            self._failed_bearings.popleft()
+        fail_dir_pens = np.zeros(n, dtype=np.float32)
+        if self._failed_bearings:
+            fb_arr = np.array(
+                [b for b, _ in self._failed_bearings], dtype=np.float32
+            )
+            # Angular difference between each frontier bearing and each
+            # failed bearing — shape (n_frontiers, n_failed_bearings)
+            bearing_diffs = np.abs(np.arctan2(
+                np.sin(angles_to[:, np.newaxis] - fb_arr[np.newaxis, :]),
+                np.cos(angles_to[:, np.newaxis] - fb_arr[np.newaxis, :]),
+            ))
+            # Penalise if any failed bearing is within 30°
+            fail_dir_pens = np.where(
+                np.any(bearing_diffs < math.radians(30.0), axis=1),
+                0.35, 0.0
+            )
+
+        # Bug 9: rebalanced scoring weights
         scores = (
-            0.45 * info_scores
-            + 0.35 * dist_scores
-            + 0.15 * dir_scores
+            0.35 * info_scores
+            + 0.30 * dist_scores
+            + 0.25 * dir_scores
             - visit_pens
+            - fail_dir_pens
         )
+
+        # Bug 11: random perturbation after 2+ consecutive failures
+        if self.consec_fail >= 2:
+            scores += self._rng.uniform(-0.15, 0.15, size=n).astype(np.float32)
 
         # Build result list with only valid frontiers
         result: List[Frontier] = []
@@ -806,11 +862,23 @@ class FrontierExplorer(Node):
 
     def _blacklist_current_goal(self) -> None:
         """Add the current navigation goal to the blacklist so that nearby
-        frontiers are excluded from future selection until the entry expires."""
+        frontiers are excluded from future selection until the entry expires.
+        Also record the bearing from the robot to the failed goal so that
+        frontiers in the same direction receive a scoring penalty (Bug 8)."""
         if self._current_goal is None:
             return
         gx, gy = self._current_goal
-        self._blacklist.append((gx, gy, self._now_sec()))
+        now = self._now_sec()
+        self._blacklist.append((gx, gy, now))
+        # Bug 8: record failure bearing for direction penalty
+        # Use latest TF pose for accurate bearing calculation
+        pose = self._robot_in_map()
+        if pose is not None:
+            cur_rx, cur_ry, _ = pose
+        else:
+            cur_rx, cur_ry = self.rx, self.ry
+        bearing = math.atan2(gy - cur_ry, gx - cur_rx)
+        self._failed_bearings.append((bearing, now))
         self.get_logger().info(
             f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f})"
         )
