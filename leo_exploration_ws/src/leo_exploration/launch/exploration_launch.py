@@ -155,7 +155,7 @@ def generate_launch_description():
                     "robot_frame":            "base_link",
                     "map_frame":              "map",
                     "min_frontier_size":      5,
-                    "obstacle_dist":          0.45,
+                    "obstacle_dist":          0.50,
                     "obstacle_half_angle":    50.0,
                     "nav_timeout":            35.0,
                     "spin_speed":             0.55,
