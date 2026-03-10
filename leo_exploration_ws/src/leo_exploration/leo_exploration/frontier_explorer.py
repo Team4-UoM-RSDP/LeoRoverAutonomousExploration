@@ -2,6 +2,7 @@
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
 <<<<<<< HEAD
+<<<<<<< HEAD
 ROS2 Jazzy  |  v2.7
 
 Changelog v2.7 (too-close oscillation escape):
@@ -29,6 +30,9 @@ Changelog v2.5 (LiDAR wall-penetration mitigation):
             Paired with URDF sensor range reduction (12 → 8 m), SLAM Toolbox
             max_laser_range reduction (12 → 8 m), and thicker Gazebo walls
             (0.2 → 0.4 m) to eliminate false free-space beyond room boundaries.
+=======
+ROS2 Jazzy  |  v2.4
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 =======
 ROS2 Jazzy  |  v2.4
 >>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
@@ -327,8 +331,11 @@ class FrontierExplorer(Node):
         self.declare_parameter("blacklist_radius",     2.0)     # m
         self.declare_parameter("blacklist_duration",   300.0)   # s
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.declare_parameter("max_scan_range",       8.0)     # m — clip readings beyond this
         self.declare_parameter("retreat_timeout",      60.0)    # s — retreat navigation timeout
+=======
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 =======
 >>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 
@@ -355,8 +362,11 @@ class FrontierExplorer(Node):
         self.p_bl_radius      = g("blacklist_radius").value
         self.p_bl_duration    = g("blacklist_duration").value
 <<<<<<< HEAD
+<<<<<<< HEAD
         self.p_max_scan_range = g("max_scan_range").value
         self.p_retreat_timeout = g("retreat_timeout").value
+=======
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 =======
 >>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 

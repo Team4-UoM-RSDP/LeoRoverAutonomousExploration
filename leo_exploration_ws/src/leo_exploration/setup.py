@@ -7,7 +7,11 @@ package_name = "leo_exploration"
 setup(
     name=package_name,
 <<<<<<< HEAD
+<<<<<<< HEAD
     version="2.6.0",
+=======
+    version="2.4.0",
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 =======
     version="2.4.0",
 >>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
@@ -32,7 +36,11 @@ setup(
     maintainer="You",
     maintainer_email="you@example.com",
 <<<<<<< HEAD
+<<<<<<< HEAD
     description="Frontier-based autonomous exploration for Leo Rover (ROS2 Jazzy) v2.6",
+=======
+    description="Frontier-based autonomous exploration for Leo Rover (ROS2 Jazzy) v2.4",
+>>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
 =======
     description="Frontier-based autonomous exploration for Leo Rover (ROS2 Jazzy) v2.4",
 >>>>>>> parent of 7088f60 (fix: prevent LiDAR wall penetration via range reduction and thicker walls)
