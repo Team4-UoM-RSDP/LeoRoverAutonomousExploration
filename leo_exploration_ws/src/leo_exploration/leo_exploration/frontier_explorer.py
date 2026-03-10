@@ -209,6 +209,9 @@ class FrontierExplorer(Node):
         self._scan_cache_ranges: Optional[np.ndarray] = None
         self._scan_cache_angles: Optional[np.ndarray] = None
 
+        # RNG for score perturbation (Bug 11): reuse to avoid repeated instantiation
+        self._rng = np.random.default_rng()
+
         # TF
         self.tf_buf      = Buffer()
         self.tf_listener = TransformListener(self.tf_buf, self)
@@ -777,8 +780,7 @@ class FrontierExplorer(Node):
 
         # Bug 11: random perturbation after 2+ consecutive failures
         if self.consec_fail >= 2:
-            rng = np.random.default_rng()
-            scores += rng.uniform(-0.15, 0.15, size=n).astype(np.float32)
+            scores += self._rng.uniform(-0.15, 0.15, size=n).astype(np.float32)
 
         # Build result list with only valid frontiers
         result: List[Frontier] = []
@@ -869,7 +871,13 @@ class FrontierExplorer(Node):
         now = self._now_sec()
         self._blacklist.append((gx, gy, now))
         # Bug 8: record failure bearing for direction penalty
-        bearing = math.atan2(gy - self.ry, gx - self.rx)
+        # Use latest TF pose for accurate bearing calculation
+        pose = self._robot_in_map()
+        if pose is not None:
+            cur_rx, cur_ry, _ = pose
+        else:
+            cur_rx, cur_ry = self.rx, self.ry
+        bearing = math.atan2(gy - cur_ry, gx - cur_rx)
         self._failed_bearings.append((bearing, now))
         self.get_logger().info(
             f"Blacklisted unreachable goal ({gx:.2f}, {gy:.2f})"
