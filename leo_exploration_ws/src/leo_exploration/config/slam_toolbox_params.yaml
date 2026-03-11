@@ -17,7 +17,7 @@ slam_toolbox:
     odom_frame:       odom
     map_frame:        map
     base_frame:       base_link
-    scan_topic:       /scan
+    scan_topic:       /scan_filtered   # Bug 19: 120° front-facing only — eliminates rotational degeneracy
     use_map_saver:    false
     mode:             mapping          # mapping | localization
 

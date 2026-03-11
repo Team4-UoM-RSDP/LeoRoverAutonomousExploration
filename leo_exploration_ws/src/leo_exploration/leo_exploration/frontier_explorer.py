@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v3.0
+ROS2 Jazzy  |  v5.0
+
+Changelog v5.0 (first-principles anti-ghost-wall):
+  Bug 19 - 120° front-facing lidar filter: publishes /scan_filtered with
+            only [-60°, +60°] of the original 360° scan. Drops parallel
+            side walls that cause rotational degeneracy in SLAM's scan
+            matcher. SLAM uses /scan_filtered; Nav2 costmaps keep /scan.
+  Bug 20 - Scoring weights: direction weight raised to 0.60, info_gain
+            and distance lowered so the robot strongly prefers driving
+            forward. Minimises heading changes and arc turns.
 
 Changelog v3.0 (anti-ghost-wall: eliminate in-place rotation):
-  Bug 14 - Removed INIT_SPIN: 360° lidar sees full surroundings without
-            spinning. The 12.5 s in-place rotation injected massive angular
-            odometry noise into SLAM, seeding false loop-closure matches.
-  Bug 15 - RECOVERING rewritten: pure in-place spin replaced with
-            forward-drive + gentle arc turn. Maintains good odometry quality.
-  Bug 16 - AVOIDING phase-1 rewritten: pure spin replaced with forward
-            arc turn (0.05 m/s + 0.5 rad/s). Avoids SLAM-confusing
-            stationary rotation.
-  Bug 17 - Goal orientation set to bearing-toward-frontier instead of
-            hardcoded yaw=0. Prevents Nav2 from rotating to face east at
-            every goal arrival.
-  Bug 18 - Scoring weights rebalanced: direction 0.25→0.35, info_gain
-            0.35→0.25. Strongly prefers forward frontiers, reducing the
-            need for large heading changes that trigger in-place rotation.
+  Bug 14–18 — removed INIT_SPIN, replaced recovery/avoiding spins with
+              arc turns, goal orientation set to bearing-toward-frontier.
 
 Changelog v2.5 (anti-ghost-wall: TF jump detection):
   Bug 13 - TF jump detection: monitors map→odom transform for sudden large
@@ -266,8 +263,9 @@ class FrontierExplorer(Node):
                                  self._enable_cb, 10)         # P2
 
         # Publishers
-        self._cmd_vel_pub = self.create_publisher(Twist,       "/cmd_vel",   10)
-        self._viz_pub     = self.create_publisher(MarkerArray, "/frontiers", 10)
+        self._cmd_vel_pub    = self.create_publisher(Twist,       "/cmd_vel",        10)
+        self._viz_pub        = self.create_publisher(MarkerArray, "/frontiers",      10)
+        self._scan_filt_pub  = self.create_publisher(LaserScan,   "/scan_filtered",  10)  # Bug 19
 
         # Nav2 action client
         self._nav_ac = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -289,7 +287,7 @@ class FrontierExplorer(Node):
             "\n"
             "╔══════════════════════════════════════════════╗\n"
             "║  Leo Rover Frontier Explorer  (ROS2 Jazzy)   ║\n"
-            "║  v3.0  —  no-spin exploration                ║\n"
+            "║  v5.0  —  120° lidar + zero-spin             ║\n"
             "║  Publish False to /explore/enable to pause.  ║\n"
             "╚══════════════════════════════════════════════╝"
         )
@@ -363,6 +361,41 @@ class FrontierExplorer(Node):
         self.latest_scan = msg
         # Invalidate scan cache when new data arrives (Perf 5)
         self._scan_cache_seq = None
+
+        # Bug 19: publish 120° front-facing filtered scan for SLAM
+        self._publish_filtered_scan(msg)
+
+    def _publish_filtered_scan(self, msg: LaserScan) -> None:
+        """Crop the 360° scan to [-60°, +60°] (120° front arc).
+
+        Ranges outside this window are set to inf so SLAM ignores them.
+        The full 360° /scan is still available for Nav2 obstacle avoidance.
+        """
+        filt = LaserScan()
+        filt.header            = msg.header
+        filt.angle_min         = msg.angle_min
+        filt.angle_max         = msg.angle_max
+        filt.angle_increment   = msg.angle_increment
+        filt.time_increment    = msg.time_increment
+        filt.scan_time         = msg.scan_time
+        filt.range_min         = msg.range_min
+        filt.range_max         = msg.range_max
+
+        # Compute angles for each ray
+        n = len(msg.ranges)
+        ranges = list(msg.ranges)
+        half_fov = math.radians(60.0)  # ±60° = 120° total
+
+        for i in range(n):
+            angle = msg.angle_min + i * msg.angle_increment
+            # Normalise to [-pi, pi]
+            angle = math.atan2(math.sin(angle), math.cos(angle))
+            if angle < -half_fov or angle > half_fov:
+                ranges[i] = float('inf')  # discard side/rear rays
+
+        filt.ranges      = ranges
+        filt.intensities = list(msg.intensities) if msg.intensities else []
+        self._scan_filt_pub.publish(filt)
 
     def _enable_cb(self, msg: Bool) -> None:
         """P2: publish std_msgs/Bool False to /explore/enable to pause."""
@@ -852,11 +885,11 @@ class FrontierExplorer(Node):
                 0.35, 0.0
             )
 
-        # Bug 18: direction-biased scoring weights (prefer forward frontiers)
+        # Bug 20: extreme forward bias — 60% direction weight
         scores = (
-            0.25 * info_scores
-            + 0.30 * dist_scores
-            + 0.35 * dir_scores
+            0.20 * info_scores
+            + 0.20 * dist_scores
+            + 0.60 * dir_scores
             - visit_pens
             - fail_dir_pens
         )
