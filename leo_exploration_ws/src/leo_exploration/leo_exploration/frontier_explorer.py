@@ -178,7 +178,7 @@ class FrontierExplorer(Node):
                                  self._map_cb,     tl_qos)
         self.create_subscription(OccupancyGrid, "/global_costmap/costmap",
                                  self._costmap_cb, tl_qos)
-        self.create_subscription(LaserScan, "/scan_filtered",
+        self.create_subscription(LaserScan, "/scan",
                                  self._scan_cb, 10)
         self.create_subscription(Bool, "/explore/enable",
                                  self._enable_cb, 10)
@@ -186,6 +186,8 @@ class FrontierExplorer(Node):
         # Publishers
         self._cmd_vel_pub = self.create_publisher(Twist,       "/cmd_vel",   10)
         self._viz_pub     = self.create_publisher(MarkerArray, "/frontiers", 10)
+        # Filtered scan publisher: only the front 120° arc, used by SLAM
+        self._filtered_scan_pub = self.create_publisher(LaserScan, "/scan_filtered", 10)
 
         # Nav2 action client
         self._nav_ac = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -281,7 +283,11 @@ class FrontierExplorer(Node):
         self._costmap_cache_header_stamp = None
         self._costmap_cache_array = None
 
+    def _scan_cb(self, msg: LaserScan) -> None:
+        self.latest_scan = msg
         self._scan_cache_seq = None
+        # Publish filtered (front-arc only) scan for SLAM
+        self._publish_filtered_scan(msg)
 
     def _enable_cb(self, msg: Bool) -> None:
         was = self._enabled
@@ -293,6 +299,51 @@ class FrontierExplorer(Node):
             self._stop()
             if self._goal_handle is not None:
                 self._cancel_nav()
+
+    # -------------------------------------------------------------------------
+    #  120° front-facing LiDAR filter
+    # -------------------------------------------------------------------------
+
+    def _publish_filtered_scan(self, scan: LaserScan) -> None:
+        """
+        Publish a copy of the scan with rays outside the front ±60° arc
+        replaced by inf.  SLAM Toolbox subscribes to /scan_filtered instead
+        of /scan, so it only sees the forward view.  This prevents rear
+        laser data from creating conflicting scan matches when the robot
+        turns around, which is the root cause of the ghost-wall phenomenon.
+        """
+        n = len(scan.ranges)
+        if n == 0:
+            return
+
+        # Build angle array
+        angles = (
+            np.arange(n, dtype=np.float32) * scan.angle_increment
+            + scan.angle_min
+        )
+
+        # Mask: keep only front arc
+        keep = np.abs(angles) <= self.p_lidar_half_angle
+
+        # Build filtered ranges
+        ranges = np.array(scan.ranges, dtype=np.float32)
+        filtered = np.where(keep, ranges, float("inf"))
+
+        # Publish
+        out = LaserScan()
+        out.header = scan.header
+        out.angle_min = scan.angle_min
+        out.angle_max = scan.angle_max
+        out.angle_increment = scan.angle_increment
+        out.time_increment = scan.time_increment
+        out.scan_time = scan.scan_time
+        out.range_min = scan.range_min
+        out.range_max = scan.range_max
+        out.ranges = filtered.tolist()
+        if scan.intensities:
+            intensities = np.array(scan.intensities, dtype=np.float32)
+            out.intensities = np.where(keep, intensities, 0.0).tolist()
+        self._filtered_scan_pub.publish(out)
 
     # -------------------------------------------------------------------------
     #  Timing helper (use ROS clock for sim_time compatibility)

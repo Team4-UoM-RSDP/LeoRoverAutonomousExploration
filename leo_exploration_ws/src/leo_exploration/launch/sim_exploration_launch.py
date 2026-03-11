@@ -64,7 +64,6 @@ def generate_launch_description():
     slam_params  = os.path.join(pkg, "config", "slam_toolbox_params.yaml")
     rviz_config  = os.path.join(pkg, "config", "rviz2_config.rviz")
     bridge_cfg   = os.path.join(pkg, "config", "ros_gz_bridge.yaml")
-    custom_bt_xml_path = os.path.join(pkg, 'config', 'nav_to_pose_no_spin.xml')
 
     with open(urdf_file, "r") as f:
         robot_description = f.read()
@@ -171,28 +170,7 @@ def generate_launch_description():
     )
 
     # =========================================================================
-    # 5.  Lidar Filter Node (t = 8 s - after bridge is up)
-    #     Filters lidar data, e.g., for noise reduction or FOV adjustment.
-    # =========================================================================
-    lidar_filter_node = TimerAction(
-        period=8.0,
-        actions=[
-            LogInfo(msg="[SIM] Starting Lidar Filter Node..."),
-            Node(
-                package="leo_exploration",
-                executable="lidar_filter",
-                name="lidar_filter",
-                output="screen",
-                parameters=[{
-                    "use_sim_time":  True,
-                    "lidar_fov_deg": 120.0,
-                }],
-            ),
-        ],
-    )
-
-    # =========================================================================
-    # 6.  SLAM Toolbox  (t = 12 s — needs bridge to be forwarding /scan)
+    # 5.  SLAM Toolbox  (t = 12 s — needs bridge to be forwarding /scan)
     # =========================================================================
     slam_launch = TimerAction(
         period=12.0,
@@ -211,7 +189,7 @@ def generate_launch_description():
     )
 
     # =========================================================================
-    # 7.  RViz2  (t = 15 s)
+    # 6.  RViz2  (t = 15 s)
     # =========================================================================
     rviz_node = TimerAction(
         period=15.0,
@@ -229,7 +207,7 @@ def generate_launch_description():
     )
 
     # =========================================================================
-    # 8.  Nav2 — launched as individual nodes  (t = 22 s)
+    # 7.  Nav2 — launched as individual nodes  (t = 22 s)
     #     We do NOT use nav2_bringup/navigation_launch.py because it:
     #       (a) remaps /tf → tf, /tf_static → tf_static (breaks our bridge)
     #       (b) launches 10 nodes in a chain; any failure blocks bt_navigator
@@ -273,7 +251,7 @@ def generate_launch_description():
                 executable="bt_navigator",
                 name="bt_navigator",
                 output="screen",
-                parameters=[nav2_params, {"use_sim_time": True, "default_nav_to_pose_bt_xml": custom_bt_xml_path}],
+                parameters=[nav2_params, {"use_sim_time": True}],
             ),
 
             # ── Lifecycle Manager (transitions all nodes to ACTIVE) ──
@@ -298,7 +276,7 @@ def generate_launch_description():
     )
 
     # =========================================================================
-    # 9.  Frontier Explorer  (t = 40 s — needs Nav2 fully activated)
+    # 8.  Frontier Explorer  (t = 40 s — needs Nav2 fully activated)
     # =========================================================================
     explorer_node = TimerAction(
         period=40.0,
@@ -357,9 +335,9 @@ def generate_launch_description():
         rsp_node,
         spawn_robot,
         bridge_node,
-        lidar_filter_node, # Added lidar_filter_node
         slam_launch,
         rviz_node,
         nav2_nodes,
         explorer_node,
     ])
+

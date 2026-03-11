@@ -60,9 +60,6 @@ def generate_launch_description():
     # =========================================================================
     # 1.  RPLidar A2M12 node  (immediate)
     # =========================================================================
-    pkg_leo = get_package_share_directory("leo_exploration")
-    custom_bt_xml_path = os.path.join(pkg_leo, 'config', 'nav_to_pose_no_spin.xml')
-
     rplidar_node = Node(
         package="rplidar_ros",
         executable="rplidar_node",
@@ -77,16 +74,6 @@ def generate_launch_description():
             "scan_mode":       "Standard",
         }],
         output="screen",
-    )
-
-    lidar_filter_node = Node(
-        package="leo_exploration",
-        executable="lidar_filter",
-        name="lidar_filter",
-        output="screen",
-        parameters=[{
-            "lidar_fov_deg": 120.0
-        }]
     )
 
     # =========================================================================
@@ -143,10 +130,9 @@ def generate_launch_description():
                     os.path.join(pkg_nav2, "launch", "navigation_launch.py")
                 ),
                 launch_arguments={
-                    "use_sim_time":               use_sim_time,
-                    "params_file":                nav2_params,
-                    "autostart":                  "true",
-                    "default_nav_to_pose_bt_xml": custom_bt_xml_path,
+                    "use_sim_time":  use_sim_time,
+                    "params_file":   nav2_params,
+                    "autostart":     "true",
                 }.items(),
             ),
         ],
@@ -214,7 +200,6 @@ def generate_launch_description():
         laser_height_arg,
         LogInfo(msg="╔══ Leo Rover Exploration System Starting ══╗"),
         rplidar_node,
-        lidar_filter_node,
         tf_base_laser,
         slam_launch,
         nav2_launch,
