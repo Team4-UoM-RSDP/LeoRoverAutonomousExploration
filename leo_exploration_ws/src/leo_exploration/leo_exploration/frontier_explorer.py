@@ -1,34 +1,7 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v6.0
-
-Changelog v6.0 (anti-shark-trap):
-  Bug 21 - Nav2 `use_rotate_to_heading` re-enabled but restricted to >143°
-           for dead-end U-turns only.
-  Bug 22 - Added obstacle detection to `_drive_forward`. Stops and recovers
-           instead of pushing against walls when all frontiers are filtered.
-  Bug 23 - `RECOVERING` phase 2 changed to a very tight/slow spin to escape
-           dead-ends where arc turns are impossible.
-
-Changelog v5.0 (first-principles anti-ghost-wall):
-  Bug 19 - 120° front-facing lidar filter: publishes /scan_filtered with
-            only [-60°, +60°] of the original 360° scan. Drops parallel
-            side walls that cause rotational degeneracy in SLAM's scan
-            matcher. SLAM uses /scan_filtered; Nav2 costmaps keep /scan.
-  Bug 20 - Scoring weights: direction weight raised to 0.60, info_gain
-            and distance lowered so the robot strongly prefers driving
-            forward. Minimises heading changes and arc turns.
-
-Changelog v3.0 (anti-ghost-wall: eliminate in-place rotation):
-  Bug 14–18 — removed INIT_SPIN, replaced recovery/avoiding spins with
-              arc turns, goal orientation set to bearing-toward-frontier.
-
-Changelog v2.5 (anti-ghost-wall: TF jump detection):
-  Bug 13 - TF jump detection: monitors map→odom transform for sudden large
-            changes (>1m displacement or >30° rotation) caused by incorrect
-            SLAM loop closures. When detected, cancels navigation, clears
-            costmaps, and enters a cooldown period to let the map stabilize.
+ROS2 Jazzy  |  v2.4
 
 Changelog v2.4 (adaptive blacklisting & scoring rebalance):
   Bug 7  - Adaptive blacklist radius: base radius (2.0 m) scales up with
@@ -137,11 +110,11 @@ COSTMAP_LETHAL_THRESH = 70   # range 0-100 (nav2 scale)
 # =============================================================================
 
 class State(Enum):
-    INIT_SPIN       = auto()   # (LEGACY — skipped in v3.0) Initial spin
+    INIT_SPIN       = auto()   # Initial 360 spin to seed SLAM map
     SELECT_FRONTIER = auto()   # Pick best frontier and dispatch Nav2 goal
     NAVIGATING      = auto()   # Waiting for Nav2 to reach goal
-    AVOIDING        = auto()   # Composite avoidance: back-up then arc turn
-    RECOVERING      = auto()   # Forward-drive + arc to expose new frontiers
+    AVOIDING        = auto()   # Composite avoidance: back-up then spin
+    RECOVERING      = auto()   # Slow spin to expose new frontiers
     COMPLETE        = auto()   # All frontiers exhausted
 
 
@@ -176,7 +149,7 @@ class FrontierExplorer(Node):
         self._load_params()
 
         # Runtime state
-        self.state: State                           = State.SELECT_FRONTIER  # Bug 14: skip INIT_SPIN
+        self.state: State                           = State.INIT_SPIN
         self.map_data: Optional[OccupancyGrid]      = None
         self.costmap_data: Optional[OccupancyGrid]  = None   # P1
         self.latest_scan: Optional[LaserScan]       = None
@@ -201,11 +174,10 @@ class FrontierExplorer(Node):
 
         # Avoidance bookkeeping
         self._avoid_t0: Optional[float] = None
-        self._avoid_phase: int          = 0   # 0=back-up, 1=arc-turn
+        self._avoid_phase: int          = 0   # 0=back-up, 1=spin
 
-        # Recovery bookkeeping  (Bug 15: forward + arc, no pure spin)
+        # Recovery bookkeeping
         self._recov_t0: Optional[float] = None
-        self._recov_phase: int          = 0   # 0=clear costmaps, 1=forward, 2=arc
 
         # Visited frontier history (bounded deque)
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
@@ -240,15 +212,6 @@ class FrontierExplorer(Node):
         # RNG for score perturbation (Bug 11): reuse to avoid repeated instantiation
         self._rng = np.random.default_rng()
 
-        # Bug 13: TF jump detection — track map→odom transform for sudden changes
-        self._prev_map_odom_x:   Optional[float] = None
-        self._prev_map_odom_y:   Optional[float] = None
-        self._prev_map_odom_yaw: Optional[float] = None
-        self._tf_jump_cooldown_until: float = 0.0  # ROS time; skip frontier selection until this time
-        self._tf_jump_threshold_dist: float = 1.0  # metres — displacement threshold
-        self._tf_jump_threshold_yaw:  float = math.radians(30.0)  # radians — rotation threshold
-        self._tf_jump_cooldown_secs:  float = 5.0  # seconds to wait after a jump
-
         # TF
         self.tf_buf      = Buffer()
         self.tf_listener = TransformListener(self.tf_buf, self)
@@ -271,9 +234,8 @@ class FrontierExplorer(Node):
                                  self._enable_cb, 10)         # P2
 
         # Publishers
-        self._cmd_vel_pub    = self.create_publisher(Twist,       "/cmd_vel",        10)
-        self._viz_pub        = self.create_publisher(MarkerArray, "/frontiers",      10)
-        self._scan_filt_pub  = self.create_publisher(LaserScan,   "/scan_filtered",  10)  # Bug 19
+        self._cmd_vel_pub = self.create_publisher(Twist,       "/cmd_vel",   10)
+        self._viz_pub     = self.create_publisher(MarkerArray, "/frontiers", 10)
 
         # Nav2 action client
         self._nav_ac = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -295,7 +257,7 @@ class FrontierExplorer(Node):
             "\n"
             "╔══════════════════════════════════════════════╗\n"
             "║  Leo Rover Frontier Explorer  (ROS2 Jazzy)   ║\n"
-            "║  v6.0  —  shark-trap fix                     ║\n"
+            "║  v2.0  -  starting initial 360 spin...       ║\n"
             "║  Publish False to /explore/enable to pause.  ║\n"
             "╚══════════════════════════════════════════════╝"
         )
@@ -369,41 +331,6 @@ class FrontierExplorer(Node):
         self.latest_scan = msg
         # Invalidate scan cache when new data arrives (Perf 5)
         self._scan_cache_seq = None
-
-        # Bug 19: publish 120° front-facing filtered scan for SLAM
-        self._publish_filtered_scan(msg)
-
-    def _publish_filtered_scan(self, msg: LaserScan) -> None:
-        """Crop the 360° scan to [-60°, +60°] (120° front arc).
-
-        Ranges outside this window are set to inf so SLAM ignores them.
-        The full 360° /scan is still available for Nav2 obstacle avoidance.
-        """
-        filt = LaserScan()
-        filt.header            = msg.header
-        filt.angle_min         = msg.angle_min
-        filt.angle_max         = msg.angle_max
-        filt.angle_increment   = msg.angle_increment
-        filt.time_increment    = msg.time_increment
-        filt.scan_time         = msg.scan_time
-        filt.range_min         = msg.range_min
-        filt.range_max         = msg.range_max
-
-        # Compute angles for each ray
-        n = len(msg.ranges)
-        ranges = list(msg.ranges)
-        half_fov = math.radians(60.0)  # ±60° = 120° total
-
-        for i in range(n):
-            angle = msg.angle_min + i * msg.angle_increment
-            # Normalise to [-pi, pi]
-            angle = math.atan2(math.sin(angle), math.cos(angle))
-            if angle < -half_fov or angle > half_fov:
-                ranges[i] = float('inf')  # discard side/rear rays
-
-        filt.ranges      = ranges
-        filt.intensities = list(msg.intensities) if msg.intensities else []
-        self._scan_filt_pub.publish(filt)
 
     def _enable_cb(self, msg: Bool) -> None:
         """P2: publish std_msgs/Bool False to /explore/enable to pause."""
@@ -501,57 +428,6 @@ class FrontierExplorer(Node):
         except (LookupException, ConnectivityException, ExtrapolationException):
             return None
 
-    def _check_tf_jump(self) -> bool:
-        """
-        Bug 13: Check if map→odom transform has jumped significantly since last
-        tick.  A large jump indicates SLAM performed a (possibly incorrect)
-        loop closure that tore the map.  Returns True if a jump was detected.
-        """
-        try:
-            t = self.tf_buf.lookup_transform(
-                self.p_map_frame, "odom", rclpy.time.Time()
-            )
-        except (LookupException, ConnectivityException, ExtrapolationException):
-            return False
-
-        x   = t.transform.translation.x
-        y   = t.transform.translation.y
-        q   = t.transform.rotation
-        yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-        )
-
-        if self._prev_map_odom_x is None:
-            # First reading — store and return no jump
-            self._prev_map_odom_x   = x
-            self._prev_map_odom_y   = y
-            self._prev_map_odom_yaw = yaw
-            return False
-
-        dx   = x - self._prev_map_odom_x
-        dy   = y - self._prev_map_odom_y
-        dist = math.hypot(dx, dy)
-        dyaw = abs(math.atan2(
-            math.sin(yaw - self._prev_map_odom_yaw),
-            math.cos(yaw - self._prev_map_odom_yaw),
-        ))
-
-        # Update stored values
-        self._prev_map_odom_x   = x
-        self._prev_map_odom_y   = y
-        self._prev_map_odom_yaw = yaw
-
-        if dist > self._tf_jump_threshold_dist or dyaw > self._tf_jump_threshold_yaw:
-            self.get_logger().warn(
-                f"⚠ TF JUMP detected!  map→odom shifted "
-                f"{dist:.2f}m / {math.degrees(dyaw):.1f}° — "
-                f"possible bad loop closure.  Entering cooldown."
-            )
-            return True
-
-        return False
-
     def _obstacle_in_sector(self) -> Tuple[bool, float]:
         """
         Perf 5: Numpy-vectorised forward obstacle check with cached arrays.
@@ -604,16 +480,6 @@ class FrontierExplorer(Node):
             self._fwd_t0 = self._now_sec()
             self.get_logger().info(f"Driving forward at {speed} m/s for {duration}s")
         elapsed = self._now_sec() - self._fwd_t0
-
-        # Bug 22: Added obstacle detection to blind drive-forward
-        obs, dist = self._obstacle_in_sector()
-        if obs and dist < self.p_obs_dist:
-            self.get_logger().warn(f"Obstacle blocks forward drive! Entering recovery.")
-            self._stop()
-            self._fwd_t0 = None
-            self.state = State.RECOVERING
-            return
-
         if elapsed < duration:
             self._drive(speed)
         else:
@@ -903,11 +769,11 @@ class FrontierExplorer(Node):
                 0.35, 0.0
             )
 
-        # Bug 20: extreme forward bias — 60% direction weight
+        # Bug 9: rebalanced scoring weights
         scores = (
-            0.20 * info_scores
-            + 0.20 * dist_scores
-            + 0.60 * dir_scores
+            0.35 * info_scores
+            + 0.30 * dist_scores
+            + 0.25 * dir_scores
             - visit_pens
             - fail_dir_pens
         )
@@ -940,10 +806,7 @@ class FrontierExplorer(Node):
         goal.pose.header.stamp       = self.get_clock().now().to_msg()
         goal.pose.pose.position.x    = fx
         goal.pose.pose.position.y    = fy
-        # Bug 17: orient toward frontier instead of hardcoded yaw=0
-        goal_yaw = math.atan2(fy - self.ry, fx - self.rx)
-        goal.pose.pose.orientation.z = math.sin(goal_yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(goal_yaw / 2.0)
+        goal.pose.pose.orientation.w = 1.0
 
         self._nav_done = False
         self._nav_ok   = False
@@ -1106,32 +969,31 @@ class FrontierExplorer(Node):
             return    # P2: paused
 
         now = self._now_sec()   # Bug 5: ROS clock
-
-        # Bug 13: TF jump detection — react to SLAM map corrections
-        if self._check_tf_jump():
-            # Cancel any active navigation
-            if self._goal_handle is not None:
-                self.get_logger().info("Cancelling navigation due to TF jump")
-                self._cancel_nav()
-            # Clear costmaps to remove stale data
-            self._clear_costmaps()
-            # Set cooldown: do not select a new frontier until map stabilises
-            self._tf_jump_cooldown_until = now + self._tf_jump_cooldown_secs
-            self.state = State.SELECT_FRONTIER
-            return
-
-        # Bug 13: skip processing during cooldown
-        if now < self._tf_jump_cooldown_until:
-            return
-
         {
-            State.INIT_SPIN:       self._state_select,   # Bug 14: INIT_SPIN skipped, goes straight to select
+            State.INIT_SPIN:       self._state_init_spin,
             State.SELECT_FRONTIER: self._state_select,
             State.NAVIGATING:      self._state_navigating,
             State.AVOIDING:        self._state_avoiding,
             State.RECOVERING:      self._state_recovering,
             State.COMPLETE:        self._state_complete,
         }[self.state](now)
+
+    # -------------------------------------------------------------------------
+    #  State: INIT_SPIN
+    # -------------------------------------------------------------------------
+
+    def _state_init_spin(self, now: float) -> None:
+        if self._spin_t0 is None:
+            self._spin_t0 = now
+            self.get_logger().info("Initial 360 spin started...")
+
+        if now - self._spin_t0 < self.p_spin_duration:
+            self._spin()
+        else:
+            self._stop()
+            self._spin_t0 = None
+            self.get_logger().info("Initial spin done - starting exploration")
+            self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: SELECT_FRONTIER
@@ -1242,7 +1104,7 @@ class FrontierExplorer(Node):
             self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
-    #  State: AVOIDING  (Bug 16: arc turn instead of pure spin)
+    #  State: AVOIDING
     # -------------------------------------------------------------------------
 
     def _state_avoiding(self, now: float) -> None:
@@ -1252,15 +1114,15 @@ class FrontierExplorer(Node):
             if elapsed < self.p_backup_dur:
                 self._drive(self.p_backup_speed)
             else:
-                # Transition to arc turn; reset t0
+                # Transition to spin; reset t0 BEFORE next tick (Bug 6 from prev)
                 self._avoid_phase = 1
                 self._avoid_t0    = now
-                self._drive(0.05, 0.5)   # Bug 16: arc turn (forward + rotate)
+                self._spin(self.p_spin_speed * 1.4)   # start immediately
         else:
-            # Phase 1: arc turn to clear obstacle
+            # Phase 1: spin to clear obstacle; elapsed measured from new t0
             elapsed = now - (self._avoid_t0 or now)
             if elapsed < self.p_avoid_spin_dur:
-                self._drive(0.05, 0.5)   # Bug 16: gentle arc, NOT pure spin
+                self._spin(self.p_spin_speed * 1.4)
             else:
                 self._stop()
                 self.get_logger().info("Avoidance manoeuvre complete")
@@ -1269,46 +1131,21 @@ class FrontierExplorer(Node):
                 self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
-    #  State: RECOVERING  (Bug 15: forward + arc, no pure spin)
+    #  State: RECOVERING
     # -------------------------------------------------------------------------
 
     def _state_recovering(self, now: float) -> None:
         if self._recov_t0 is None:
-            self._recov_t0    = now
-            self._recov_phase = 0
-            self._clear_costmaps()
-            self.get_logger().info("Recovery: clear costmaps → forward → arc")
+            self._recov_t0 = now
+            self.get_logger().info("Recovery spin...")
 
-        elapsed = now - self._recov_t0
-
-        if self._recov_phase == 0:
-            # Phase 0: wait 0.5 s for costmap clear to propagate
-            if elapsed >= 0.5:
-                self._recov_phase = 1
-                self._recov_t0 = now
-
-        elif self._recov_phase == 1:
-            # Phase 1: drive forward slowly for 2 s (stop if obstacle)
-            elapsed = now - self._recov_t0
-            obs, dist = self._obstacle_in_sector()
-            if elapsed < 2.0 and not (obs and dist < self.p_obs_dist):
-                self._drive(0.10)
-            else:
-                # Transition to arc turn
-                self._recov_phase = 2
-                self._recov_t0 = now
-
-        elif self._recov_phase == 2:
-            # Phase 2: gentle arc turn for 2 s (forward + rotate)
-            elapsed = now - self._recov_t0
-            if elapsed < 2.0:
-                self._drive(0.05, 0.4)
-            else:
-                self._stop()
-                self._recov_t0    = None
-                self._recov_phase = 0
-                self.get_logger().info("Recovery manoeuvre done")
-                self.state = State.SELECT_FRONTIER
+        if now - self._recov_t0 < self.p_recov_spin_dur:
+            self._spin()
+        else:
+            self._stop()
+            self._recov_t0 = None
+            self.get_logger().info("Recovery spin done")
+            self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: COMPLETE  (Bug 4: exactly-once guard)

@@ -17,7 +17,7 @@ slam_toolbox:
     odom_frame:       odom
     map_frame:        map
     base_frame:       base_link
-    scan_topic:       /scan_filtered   # Bug 19: 120° front-facing only — eliminates rotational degeneracy
+    scan_topic:       /scan
     use_map_saver:    false
     mode:             mapping          # mapping | localization
 
@@ -39,21 +39,21 @@ slam_toolbox:
     # ── Scan matcher ──────────────────────────────────────────────────────────
     use_scan_matching:          true
     use_scan_barycenter:        true
-    minimum_travel_distance:    0.8    # metres before new pose is added (was 0.5 — further increased to reduce pose graph density in symmetric environments)
+    minimum_travel_distance:    0.5    # metres before new pose is added (was 0.3 — increased to reduce noisy loop closures)
     minimum_travel_heading:     0.3    # radians before new pose is added
     scan_buffer_size:           10
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine:  0.1
     link_scan_maximum_distance:        1.5
-    loop_search_maximum_distance:      2.0    # was 3.0 — reduced to limit false matches in symmetric environments
-    do_loop_closing:                   false   # DISABLED — prevents rotated map artifacts in symmetric environments
-    loop_match_minimum_chain_size:     15     # was 10 — require more consistent matches to accept a loop closure
+    loop_search_maximum_distance:      3.0
+    do_loop_closing:                   true
+    loop_match_minimum_chain_size:     10
     loop_match_maximum_variance_coarse: 3.0
-    loop_match_minimum_response_coarse: 0.65   # was 0.45 — aggressively tightened to reject 90° rotation false positives
-    loop_match_minimum_response_fine:   0.70   # was 0.55 — only accept high-confidence loop closures
+    loop_match_minimum_response_coarse: 0.45   # was 0.35 — tightened to reject weak loop closures
+    loop_match_minimum_response_fine:   0.55   # was 0.45 — tightened to prevent map jumps
 
     # ── Correlation parameters ────────────────────────────────────────────────
-    correlation_search_space_dimension:    0.3    # was 0.5 — narrower search reduces chance of false matches
+    correlation_search_space_dimension:    0.5
     correlation_search_space_resolution:   0.01
     correlation_search_space_smear_deviation: 0.1
 

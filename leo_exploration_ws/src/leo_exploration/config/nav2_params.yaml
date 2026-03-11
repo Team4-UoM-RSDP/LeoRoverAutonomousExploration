@@ -58,7 +58,7 @@ controller_server:
       stateful: true
       plugin: "nav2_controller::SimpleGoalChecker"
       xy_goal_tolerance: 0.30
-      yaw_goal_tolerance: 3.14159   # exploration doesn't need specific goal orientation
+      yaw_goal_tolerance: 0.30
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
@@ -80,9 +80,9 @@ controller_server:
       use_cost_regulated_linear_velocity_scaling: false
       regulated_linear_scaling_min_radius: 0.9
       regulated_linear_scaling_min_speed: 0.25
-      use_rotate_to_heading: true         # Bug 21: Re-enabled for dead-end U-turns ONLY
+      use_rotate_to_heading: true
       allow_reversing: false
-      rotate_to_heading_min_angle: 2.5    # Bug 21: Only rotate in-place for >143° (U-turns). Protects SLAM in 90° corners.
+      rotate_to_heading_min_angle: 0.785
       max_angular_accel: 3.2
       max_robot_pose_search_dist: 10.0
 
