@@ -33,6 +33,7 @@ setup(
     entry_points={
         "console_scripts": [
             "frontier_explorer = leo_exploration.frontier_explorer:main",
+            "lidar_filter = leo_exploration.lidar_filter:main",
         ],
     },
 )

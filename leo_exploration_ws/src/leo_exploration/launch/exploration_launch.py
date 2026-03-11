@@ -73,6 +73,17 @@ def generate_launch_description():
             "angle_compensate": True,
             "scan_mode":       "Standard",
         }],
+        remappings=[("/scan", "/scan_raw")],
+        output="screen",
+    )
+
+    # =========================================================================
+    #     Lidar Filter Node (takes /scan_raw -> outputs /scan)
+    # =========================================================================
+    lidar_filter_node = Node(
+        package="leo_exploration",
+        executable="lidar_filter",
+        name="lidar_filter",
         output="screen",
     )
 
@@ -198,6 +209,7 @@ def generate_launch_description():
         laser_height_arg,
         LogInfo(msg="╔══ Leo Rover Exploration System Starting ══╗"),
         rplidar_node,
+        lidar_filter_node,
         tf_base_laser,
         slam_launch,
         nav2_launch,

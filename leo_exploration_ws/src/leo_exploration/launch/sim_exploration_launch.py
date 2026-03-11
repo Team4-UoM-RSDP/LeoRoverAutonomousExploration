@@ -170,6 +170,23 @@ def generate_launch_description():
     )
 
     # =========================================================================
+    # 4.5 Lidar Filter Node (t = 8 s)
+    #     Takes /scan_raw from bridge and outputs filtered /scan
+    # =========================================================================
+    lidar_filter_node = TimerAction(
+        period=8.0,
+        actions=[
+            LogInfo(msg="[SIM] Starting Lidar Filter..."),
+            Node(
+                package="leo_exploration",
+                executable="lidar_filter",
+                name="lidar_filter",
+                output="screen",
+            ),
+        ],
+    )
+
+    # =========================================================================
     # 5.  SLAM Toolbox  (t = 12 s — needs bridge to be forwarding /scan)
     # =========================================================================
     slam_launch = TimerAction(
@@ -332,6 +349,7 @@ def generate_launch_description():
         rsp_node,
         spawn_robot,
         bridge_node,
+        lidar_filter_node,
         slam_launch,
         rviz_node,
         nav2_nodes,

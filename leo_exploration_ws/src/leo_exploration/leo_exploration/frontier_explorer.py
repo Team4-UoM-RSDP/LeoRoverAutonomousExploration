@@ -110,11 +110,8 @@ COSTMAP_LETHAL_THRESH = 70   # range 0-100 (nav2 scale)
 # =============================================================================
 
 class State(Enum):
-    INIT_SPIN       = auto()   # Initial 360 spin to seed SLAM map
     SELECT_FRONTIER = auto()   # Pick best frontier and dispatch Nav2 goal
     NAVIGATING      = auto()   # Waiting for Nav2 to reach goal
-    AVOIDING        = auto()   # Composite avoidance: back-up then spin
-    RECOVERING      = auto()   # Slow spin to expose new frontiers
     COMPLETE        = auto()   # All frontiers exhausted
 
 
@@ -149,7 +146,7 @@ class FrontierExplorer(Node):
         self._load_params()
 
         # Runtime state
-        self.state: State                           = State.INIT_SPIN
+        self.state: State                           = State.SELECT_FRONTIER
         self.map_data: Optional[OccupancyGrid]      = None
         self.costmap_data: Optional[OccupancyGrid]  = None   # P1
         self.latest_scan: Optional[LaserScan]       = None
@@ -170,14 +167,6 @@ class FrontierExplorer(Node):
         # Counters
         self.consec_fail:  int = 0
         self.total_fail:   int = 0
-        self.recov_spins:  int = 0
-
-        # Avoidance bookkeeping
-        self._avoid_t0: Optional[float] = None
-        self._avoid_phase: int          = 0   # 0=back-up, 1=spin
-
-        # Recovery bookkeeping
-        self._recov_t0: Optional[float] = None
 
         # Visited frontier history (bounded deque)
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
@@ -970,30 +959,10 @@ class FrontierExplorer(Node):
 
         now = self._now_sec()   # Bug 5: ROS clock
         {
-            State.INIT_SPIN:       self._state_init_spin,
             State.SELECT_FRONTIER: self._state_select,
             State.NAVIGATING:      self._state_navigating,
-            State.AVOIDING:        self._state_avoiding,
-            State.RECOVERING:      self._state_recovering,
             State.COMPLETE:        self._state_complete,
         }[self.state](now)
-
-    # -------------------------------------------------------------------------
-    #  State: INIT_SPIN
-    # -------------------------------------------------------------------------
-
-    def _state_init_spin(self, now: float) -> None:
-        if self._spin_t0 is None:
-            self._spin_t0 = now
-            self.get_logger().info("Initial 360 spin started...")
-
-        if now - self._spin_t0 < self.p_spin_duration:
-            self._spin()
-        else:
-            self._stop()
-            self._spin_t0 = None
-            self.get_logger().info("Initial spin done - starting exploration")
-            self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: SELECT_FRONTIER
@@ -1018,24 +987,14 @@ class FrontierExplorer(Node):
         raw_frontiers = self._detect_frontiers()
 
         if not raw_frontiers:
-            self.recov_spins += 1
-            self.get_logger().warn(
-                f"No frontiers found (streak={self.recov_spins})"
-            )
-            if self.recov_spins >= self.p_no_front_done:
-                self.get_logger().info("No frontiers left - exploration complete!")
-                self.state = State.COMPLETE
-            else:
-                self.state = State.RECOVERING
+            self.get_logger().info("No frontiers left - exploration complete!")
+            self.state = State.COMPLETE
             return
-
-        self.recov_spins = 0
 
         if self.consec_fail >= self.p_max_consec:
-            self.get_logger().warn("Too many consecutive failures - recovery spin")
+            self.get_logger().warn("Too many consecutive failures - clearing costmaps and trying again")
+            self._clear_costmaps()
             self.consec_fail = 0
-            self.state = State.RECOVERING
-            return
 
         scored = self._score_frontiers(raw_frontiers, rx, ry, ryaw)
         self._publish_frontiers(scored[:20])
@@ -1069,12 +1028,13 @@ class FrontierExplorer(Node):
         obs, dist = self._obstacle_in_sector()
         if obs and dist < self.p_obs_dist * 0.65:
             self.get_logger().warn(
-                f"Obstacle at {dist:.2f} m - emergency avoidance"
+                f"Obstacle at {dist:.2f} m - emergency interrupt, calculating next frontier"
             )
             self._cancel_nav()
-            self._avoid_t0    = now
-            self._avoid_phase = 0
-            self.state = State.AVOIDING
+            self.consec_fail += 1
+            self.total_fail += 1
+            self._blacklist_current_goal()
+            self.state = State.SELECT_FRONTIER
             return
 
         # Navigation result arrived via callback
@@ -1101,50 +1061,6 @@ class FrontierExplorer(Node):
             self.total_fail  += 1
             self._blacklist_current_goal()
             self._nav_done    = False
-            self.state = State.SELECT_FRONTIER
-
-    # -------------------------------------------------------------------------
-    #  State: AVOIDING
-    # -------------------------------------------------------------------------
-
-    def _state_avoiding(self, now: float) -> None:
-        if self._avoid_phase == 0:
-            # Phase 0: back up
-            elapsed = now - (self._avoid_t0 or now)
-            if elapsed < self.p_backup_dur:
-                self._drive(self.p_backup_speed)
-            else:
-                # Transition to spin; reset t0 BEFORE next tick (Bug 6 from prev)
-                self._avoid_phase = 1
-                self._avoid_t0    = now
-                self._spin(self.p_spin_speed * 1.4)   # start immediately
-        else:
-            # Phase 1: spin to clear obstacle; elapsed measured from new t0
-            elapsed = now - (self._avoid_t0 or now)
-            if elapsed < self.p_avoid_spin_dur:
-                self._spin(self.p_spin_speed * 1.4)
-            else:
-                self._stop()
-                self.get_logger().info("Avoidance manoeuvre complete")
-                self.consec_fail += 1
-                self._blacklist_current_goal()
-                self.state = State.SELECT_FRONTIER
-
-    # -------------------------------------------------------------------------
-    #  State: RECOVERING
-    # -------------------------------------------------------------------------
-
-    def _state_recovering(self, now: float) -> None:
-        if self._recov_t0 is None:
-            self._recov_t0 = now
-            self.get_logger().info("Recovery spin...")
-
-        if now - self._recov_t0 < self.p_recov_spin_dur:
-            self._spin()
-        else:
-            self._stop()
-            self._recov_t0 = None
-            self.get_logger().info("Recovery spin done")
             self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
