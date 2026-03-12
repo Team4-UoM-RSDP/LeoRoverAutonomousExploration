@@ -64,6 +64,7 @@ def generate_launch_description():
     slam_params  = os.path.join(pkg, "config", "slam_toolbox_params.yaml")
     rviz_config  = os.path.join(pkg, "config", "rviz2_config.rviz")
     bridge_cfg   = os.path.join(pkg, "config", "ros_gz_bridge.yaml")
+    ekf_params   = os.path.join(pkg, "config", "ekf.yaml")
 
     with open(urdf_file, "r") as f:
         robot_description = f.read()
@@ -165,6 +166,25 @@ def generate_launch_description():
                     "config_file":   bridge_cfg,
                     "use_sim_time":  True,
                 }],
+            ),
+        ],
+    )
+
+    # =========================================================================
+    # 4.5. robot_localization (EKF) (t = 9 s — after bridge has sensor data)
+    #      Fuses /odom and /imu to output odom -> base_footprint TF
+    # =========================================================================
+    ekf_node = TimerAction(
+        period=9.0,
+        actions=[
+            LogInfo(msg="[SIM] Starting robot_localization EKF..."),
+            Node(
+                package="robot_localization",
+                executable="ekf_node",
+                name="ekf_filter_node",
+                output="screen",
+                parameters=[ekf_params, {"use_sim_time": True}],
+                remappings=[("odometry/filtered", "odom_filtered")],
             ),
         ],
     )
@@ -335,6 +355,7 @@ def generate_launch_description():
         rsp_node,
         spawn_robot,
         bridge_node,
+        ekf_node,
         slam_launch,
         rviz_node,
         nav2_nodes,

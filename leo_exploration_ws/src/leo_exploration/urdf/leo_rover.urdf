@@ -18,8 +18,8 @@
     /odom     (nav_msgs/Odometry)      → SLAM & Nav2 read this
     /scan     (sensor_msgs/LaserScan)  → SLAM reads this
     /clock    (rosgraph_msgs/Clock)    → sim time
-    /tf       (tf2_msgs/TFMessage)     → odom→base_link from DiffDrive
-    /tf_static (tf2_msgs/TFMessage)   → base_link→laser from URDF joint
+    /tf       (tf2_msgs/TFMessage)     → base_link→laser (from joint_state)
+    /imu      (sensor_msgs/Imu)        → IMU data for EKF (from gz-sim-imu-system)
 -->
 <robot name="leo_rover" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -206,6 +206,24 @@
   </joint>
 
   <!-- ═══════════════════════════════════════════════════════════════
+       IMU link (Located precisely in the centre of the robot base)
+  ═══════════════════════════════════════════════════════════════════ -->
+  <link name="imu_link">
+    <!-- No visual or collision needed, just a frame for the sensor -->
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0" iyy="0.00001" iyz="0" izz="0.00001"/>
+    </inertial>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <!-- Positioned inside the chassis -->
+    <origin xyz="0 0 0.05" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
        Gazebo Harmonic plugins
        NOTE: Gazebo Harmonic uses <gazebo> tags with gz-sim plugin names
   ═══════════════════════════════════════════════════════════════════ -->
@@ -225,10 +243,12 @@
       <wheel_separation>0.359</wheel_separation>
       <wheel_radius>0.0645</wheel_radius>
       <odom_publish_frequency>20</odom_publish_frequency>
-      <!-- Topics: Gazebo-internal names, ros_gz_bridge maps them to ROS -->
       <topic>/cmd_vel</topic>
       <odom_topic>/odom</odom_topic>
-      <tf_topic>/tf</tf_topic>
+      
+      <!-- IMPORTANT: Force DiffDrive NOT to publish TF. We want robot_localization to do it. -->
+      <tf_topic>/tf_diff_drive_INTERNAL_UNUSED</tf_topic>
+      
       <frame_id>odom</frame_id>
       <child_frame_id>base_footprint</child_frame_id>
       <min_acceleration>-5</min_acceleration>
@@ -242,6 +262,41 @@
             name="gz::sim::systems::JointStatePublisher">
       <topic>/joint_states</topic>
     </plugin>
+  </gazebo>
+
+  <!-- IMU Sensor -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>1</always_on>
+      <update_rate>50</update_rate>
+      <visualize>true</visualize>
+      <topic>/imu_gz</topic>
+      <gz_frame_id>imu_link</gz_frame_id>
+      <imu>
+        <angular_velocity>
+          <x>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise>
+          </x>
+          <y>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise>
+          </y>
+          <z>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0002</stddev></noise>
+          </z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise>
+          </x>
+          <y>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise>
+          </y>
+          <z>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise>
+          </z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
   </gazebo>
 
   <!-- 2D Lidar sensor (approximates RPLidar A2M12)

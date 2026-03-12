@@ -41,6 +41,7 @@ def generate_launch_description():
     nav2_params  = os.path.join(pkg_leo, "config", "nav2_params.yaml")
     slam_params  = os.path.join(pkg_leo, "config", "slam_toolbox_params.yaml")
     rviz_config  = os.path.join(pkg_leo, "config", "rviz2_config.rviz")
+    ekf_params   = os.path.join(pkg_leo, "config", "ekf.yaml")
 
     # ── Launch arguments ─────────────────────────────────────────────────────
     use_sim_time_arg = DeclareLaunchArgument(
@@ -97,6 +98,19 @@ def generate_launch_description():
             "--child-frame-id", "laser",
         ],
         output="screen",
+    )
+
+    # =========================================================================
+    # 2.5. EKF Node (IMU + Odom fusion)  (immediate)
+    #      Assumes real robot base publishes /odom and /imu
+    # =========================================================================
+    ekf_node = Node(
+        package="robot_localization",
+        executable="ekf_node",
+        name="ekf_filter_node",
+        output="screen",
+        parameters=[ekf_params, {"use_sim_time": use_sim_time}],
+        remappings=[("odometry/filtered", "odom_filtered")],
     )
 
     # =========================================================================
@@ -201,6 +215,7 @@ def generate_launch_description():
         LogInfo(msg="╔══ Leo Rover Exploration System Starting ══╗"),
         rplidar_node,
         tf_base_laser,
+        ekf_node,
         slam_launch,
         nav2_launch,
         explorer_node,

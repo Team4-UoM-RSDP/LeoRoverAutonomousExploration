@@ -1,0 +1,55 @@
+# robot_localization Extended Kalman Filter (EKF) configuration
+# Fuses wheel odometry (/odom) with IMU data (/imu) to output a stable 
+# odom -> base_footprint TF tree.
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 30.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+
+    # Frames
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    # The EKF node will publish the odom -> base_footprint transform
+    publish_tf: true
+
+    # ─────────────────────────────────────────────────────────
+    #  odom0: Wheel Encoder (nav_msgs/Odometry)
+    #  Using: X velocity, Y velocity, Yaw velocity
+    #  We do NOT use absolute X/Y/Yaw from encoders because
+    #  they drift over time and slip. We only use their twist.
+    # ─────────────────────────────────────────────────────────
+    odom0: odom
+    odom0_config: [false, false, false,   # x,   y,   z
+                   false, false, false,   # r,   p,   yaw
+                   true,  true,  false,   # vx,  vy,  vz     <-- Use velocities
+                   false, false, true,    # vroll, vpitch, vyaw <-- Use yaw velocity
+                   false, false, false]   # ax,  ay,  az
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+
+    # ─────────────────────────────────────────────────────────
+    #  imu0: Hardware/Sim IMU (sensor_msgs/Imu)
+    #  Using: Absolute Yaw, Yaw velocity
+    #  This grounds the heading, eliminating "spinning out"
+    #  in RViz after turns.
+    # ─────────────────────────────────────────────────────────
+    imu0: imu
+    imu0_config: [false, false, false,
+                  false, false, true,    # r,   p,   yaw    <-- Use absolute yaw
+                  false, false, false,
+                  false, false, true,    # vroll, vpitch, vyaw <-- Use yaw velocity
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true
