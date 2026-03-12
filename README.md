@@ -90,7 +90,7 @@ The launch file orchestrates all components with timed delays:
 | t = 12 s | SLAM Toolbox (online async mapping) |
 | t = 15 s | RViz2 |
 | t = 22 s | Nav2 — controller, planner, behavior server, bt\_navigator, lifecycle manager |
-| t = 40 s | Frontier Explorer → 360° initial spin → autonomous exploration |
+| t = 40 s | Frontier Explorer → autonomous WFD exploration (no initial spin) |
 
 > **Note:** The simulation launch starts Nav2 as individual nodes (not via `navigation_launch.py`) to avoid a TF-remapping issue in ROS 2 Jazzy.
 
@@ -215,33 +215,37 @@ Add models to `worlds/exploration_test.world` before the closing `</world>` tag:
 
 ## Exploration Algorithm
 
-The `frontier_explorer` node implements a **six-state finite-state machine**:
+The `frontier_explorer` node (v4.0) implements a **five-state finite-state machine** with the full Wavefront Frontier Detection (WFD) algorithm from `nav2_wavefront_frontier_exploration` (arXiv:1806.03581):
 
 ```
-INIT_SPIN → SELECT_FRONTIER ⇄ NAVIGATING
-                 ↕                  ↓
-             RECOVERING         AVOIDING
-                 ↓
-             COMPLETE
+WAITING_FOR_MAP → SELECT_FRONTIER ⇄ NAVIGATING
+                       ↕
+                   RECOVERING
+                       ↓
+                    COMPLETE
 ```
 
 | State | Description |
 |-------|-------------|
-| **INIT_SPIN** | 360° in-place rotation to seed the SLAM map |
-| **SELECT_FRONTIER** | Detect frontier cells (free cells neighbouring unknown), cluster via 8-connected BFS, score, and dispatch the best goal to Nav2 |
-| **NAVIGATING** | Wait for Nav2 result; performs emergency lidar-based obstacle avoidance if an object is dangerously close |
-| **AVOIDING** | Two-phase manoeuvre — back up, then spin — to escape an obstacle |
-| **RECOVERING** | Slow recovery spin when consecutive failures exceed threshold |
+| **WAITING_FOR_MAP** | Wait for `/map` data and TF readiness — no initial spin (avoids SLAM ghost walls) |
+| **SELECT_FRONTIER** | Run BFS-based WFD on the occupancy grid, cluster frontiers, score, and dispatch the best goal to Nav2 |
+| **NAVIGATING** | Wait for Nav2 result; performs emergency lidar-based obstacle avoidance (back-up) if an object is dangerously close |
+| **RECOVERING** | Slow recovery spin when consecutive failures exceed threshold or no frontiers found |
 | **COMPLETE** | All frontiers exhausted for a configurable number of consecutive checks; map is auto-saved |
+
+### Key design choices
+
+- **No initial spin** — avoids disrupting the lidar and creating SLAM ghost walls
+- **No rotation at goals** — goal orientation computed as heading toward the frontier (natural forward approach)
+- **Non-blocking NavigateToPose** — async callbacks keep the control loop responsive for obstacle avoidance
 
 ### Frontier scoring
 
 ```
-score = 0.45 × info_gain + 0.35 × distance_score + 0.15 × direction_score − visit_penalty
+score = 0.50 × distance_score + 0.15 × direction_score − visit_penalty
 ```
 
-- **info_gain** — normalised cluster size (`min(1, size / 60)`)
-- **distance_score** — prefers goals in the 1–4 m range, decays beyond
+- **distance_score** — prefers goals in the 1–4 m range (nearest mode), or far goals (farthest mode)
 - **direction_score** — prefers frontiers ahead of the robot
 - **visit_penalty** — 0.40 if any previously visited point is within 0.6 m
 - Frontiers inside the Nav2 costmap inflation zone are filtered out before scoring
@@ -253,10 +257,13 @@ All parameters are configurable via launch files or ROS 2 CLI overrides:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `min_frontier_size` | 5 | Minimum cells to consider a cluster |
+| `min_frontier_size` | 5 | Minimum cells to consider a WFD cluster |
+| `occ_threshold` | 10 | WFD obstacle threshold |
+| `frontier_selection` | `nearest` | Strategy: `nearest` or `farthest` |
 | `obstacle_dist` | 0.45 m | Emergency obstacle avoidance threshold |
 | `nav_timeout` | 35–45 s | Cancel navigation if no result |
-| `spin_duration` | 12.5 s | Initial 360° spin duration |
+| `recov_spin_speed` | 0.5 rad/s | Recovery spin angular velocity |
+| `recov_spin_duration` | 7.0 s | Recovery spin time |
 | `max_consec_fail` | 4 | Failures before recovery spin |
 | `complete_no_frontier` | 8 | Consecutive empty checks before COMPLETE |
 | `save_map_on_complete` | `true` | Auto-save map on completion |
