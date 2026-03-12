@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v3.0  —  Wavefront Frontier Detection (WFD)
+ROS2 Jazzy  |  v4.0  —  Wavefront Frontier Detection (WFD)
 
-Core algorithm ported from nav2_wavefront_frontier_exploration
+Core WFD algorithm ported from nav2_wavefront_frontier_exploration
 (arXiv:1806.03581).  BFS-based frontier detection on the raw
 OccupancyGrid with Cantor-hash point cache and bit-flag
 classification (MapOpen / MapClosed / FrontierOpen / FrontierClosed).
 
-Infrastructure retained from v2.0:
-  - State machine  (INIT_SPIN → SELECT_FRONTIER → NAVIGATING →
-                     AVOIDING → RECOVERING → COMPLETE)
-  - Async NavigateToPose (non-blocking, keeps obstacle avoidance live)
-  - TF2 robot pose lookup
-  - LaserScan emergency obstacle avoidance
-  - Costmap inflation filter on frontiers
-  - Costmap clearing on repeated failures
-  - Map auto-save on COMPLETE
-  - Pause / resume via Bool topic /explore/enable
-  - RViz frontier marker visualisation
+Key design choices:
+  - No initial 360° spin  → avoids SLAM ghost walls
+  - No rotation at goals  → orientation computed as heading toward frontier
+  - Non-blocking Nav2     → async NavigateToPose keeps obstacle avoidance live
+  - Identical code for simulation (use_sim_time:=true) and real robot
+
+State machine:
+  WAITING_FOR_MAP → SELECT_FRONTIER ⇄ NAVIGATING
+                         ↕
+                     RECOVERING
+                         ↓
+                      COMPLETE
 """
 
 import math
@@ -36,7 +37,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Pose, Twist
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool
@@ -54,7 +55,7 @@ from tf2_ros import (
 )
 
 # ============================================================================
-#  WFD Constants
+#  WFD Constants  (overridden by node parameters at runtime)
 # ============================================================================
 
 OCC_THRESHOLD = 10          # cells with occupancy > this are near obstacles
@@ -78,24 +79,24 @@ class OccupancyGrid2d:
     def __init__(self, map_msg):
         self.map = map_msg
 
-    def getCost(self, mx, my):
+    def getCost(self, mx: int, my: int) -> int:
         return self.map.data[self._getIndex(mx, my)]
 
-    def getSize(self):
+    def getSize(self) -> Tuple[int, int]:
         return (self.map.info.width, self.map.info.height)
 
-    def getSizeX(self):
+    def getSizeX(self) -> int:
         return self.map.info.width
 
-    def getSizeY(self):
+    def getSizeY(self) -> int:
         return self.map.info.height
 
-    def mapToWorld(self, mx, my):
+    def mapToWorld(self, mx: int, my: int) -> Tuple[float, float]:
         wx = self.map.info.origin.position.x + (mx + 0.5) * self.map.info.resolution
         wy = self.map.info.origin.position.y + (my + 0.5) * self.map.info.resolution
         return (wx, wy)
 
-    def worldToMap(self, wx, wy):
+    def worldToMap(self, wx: float, wy: float) -> Tuple[int, int]:
         if (wx < self.map.info.origin.position.x or
                 wy < self.map.info.origin.position.y):
             raise Exception("World coordinates out of bounds")
@@ -105,7 +106,7 @@ class OccupancyGrid2d:
             raise Exception("Out of bounds")
         return (mx, my)
 
-    def _getIndex(self, mx, my):
+    def _getIndex(self, mx: int, my: int) -> int:
         return my * self.map.info.width + mx
 
 
@@ -113,16 +114,16 @@ class FrontierCache:
     """Cantor-hash based point cache for BFS visited tracking."""
 
     def __init__(self):
-        self.cache = {}
+        self.cache = {}          # instance-level (not class-level)
 
-    def getPoint(self, x, y):
+    def getPoint(self, x: int, y: int):
         idx = self._cantorHash(x, y)
         if idx in self.cache:
             return self.cache[idx]
         self.cache[idx] = FrontierPoint(x, y)
         return self.cache[idx]
 
-    def _cantorHash(self, x, y):
+    def _cantorHash(self, x: int, y: int) -> float:
         return (((x + y) * (x + y + 1)) / 2) + y
 
     def clear(self):
@@ -133,7 +134,7 @@ class FrontierPoint:
     """Single grid cell with bit-flag classification for BFS."""
     __slots__ = ("classification", "mapX", "mapY")
 
-    def __init__(self, x, y):
+    def __init__(self, x: int, y: int):
         self.classification = 0
         self.mapX = x
         self.mapY = y
@@ -159,10 +160,11 @@ def centroid(arr):
     return sum_x / length, sum_y / length
 
 
-def findFree(mx, my, costmap):
+def findFree(mx: int, my: int, costmap: OccupancyGrid2d):
     """BFS from (mx, my) to find the nearest free-space cell."""
     fCache = FrontierCache()
     bfs = [fCache.getPoint(mx, my)]
+
     while len(bfs) > 0:
         loc = bfs.pop(0)
         if costmap.getCost(loc.mapX, loc.mapY) == OccupancyGrid2d.CostValues.FreeSpace.value:
@@ -171,10 +173,11 @@ def findFree(mx, my, costmap):
             if n.classification & PointClassification.MapClosed.value == 0:
                 n.classification = n.classification | PointClassification.MapClosed.value
                 bfs.append(n)
+
     return (mx, my)
 
 
-def getFrontier(pose, costmap, logger):
+def getFrontier(pose, costmap: OccupancyGrid2d, logger) -> List[Tuple[float, float]]:
     """
     Wavefront Frontier Detection (WFD) algorithm.
 
@@ -265,7 +268,7 @@ def getFrontier(pose, costmap, logger):
     return frontiers
 
 
-def getNeighbors(point, costmap, fCache):
+def getNeighbors(point, costmap: OccupancyGrid2d, fCache: FrontierCache):
     """Return 8-connected neighbors within map bounds."""
     neighbors = []
     for x in range(point.mapX - 1, point.mapX + 2):
@@ -276,7 +279,7 @@ def getNeighbors(point, costmap, fCache):
     return neighbors
 
 
-def isFrontierPoint(point, costmap, fCache):
+def isFrontierPoint(point, costmap: OccupancyGrid2d, fCache: FrontierCache) -> bool:
     """
     A frontier point is an unknown cell that has at least one
     free-space neighbor, and NO neighbor above OCC_THRESHOLD.
@@ -300,10 +303,9 @@ def isFrontierPoint(point, costmap, fCache):
 # ============================================================================
 
 class State(Enum):
-    INIT_SPIN       = auto()   # Initial 360 spin to seed SLAM map
+    WAITING_FOR_MAP = auto()   # Wait for /map data + TF ready
     SELECT_FRONTIER = auto()   # Pick best frontier and dispatch Nav2 goal
     NAVIGATING      = auto()   # Waiting for Nav2 to reach goal
-    AVOIDING        = auto()   # Composite avoidance: back-up then spin
     RECOVERING      = auto()   # Slow spin to expose new frontiers
     COMPLETE        = auto()   # All frontiers exhausted
 
@@ -313,11 +315,12 @@ class State(Enum):
 # ============================================================================
 
 class Frontier:
-    __slots__ = ("cx", "cy", "score")
+    __slots__ = ("cx", "cy", "size", "score")
 
-    def __init__(self, cx: float, cy: float) -> None:
+    def __init__(self, cx: float, cy: float, size: int = 0) -> None:
         self.cx    = cx
         self.cy    = cy
+        self.size  = size
         self.score = 0.0
 
 
@@ -338,7 +341,7 @@ class FrontierExplorer(Node):
         self._load_params()
 
         # Runtime state
-        self.state: State                           = State.INIT_SPIN
+        self.state: State                           = State.WAITING_FOR_MAP
         self.map_data: Optional[OccupancyGrid]      = None
         self.costmap_data: Optional[OccupancyGrid]  = None
         self.latest_scan: Optional[LaserScan]       = None
@@ -346,9 +349,6 @@ class FrontierExplorer(Node):
 
         # Robot pose (map frame)
         self.rx = self.ry = self.ryaw = 0.0
-
-        # Init-spin timing
-        self._spin_t0: Optional[float] = None
 
         # Navigation bookkeeping
         self._goal_handle              = None
@@ -363,13 +363,12 @@ class FrontierExplorer(Node):
 
         # Avoidance bookkeeping
         self._avoid_t0: Optional[float] = None
-        self._avoid_phase: int          = 0   # 0=back-up, 1=spin
 
         # Recovery bookkeeping
         self._recov_t0: Optional[float] = None
 
         # Visited frontier history (bounded deque)
-        self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
+        self._visited: Deque[Tuple[float, float]] = deque(maxlen=30)
 
         # Completion guard (exactly-once)
         self._completed: bool = False
@@ -426,8 +425,8 @@ class FrontierExplorer(Node):
             "\n"
             "╔══════════════════════════════════════════════════╗\n"
             "║  Leo Rover Frontier Explorer  (ROS2 Jazzy)       ║\n"
-            "║  v3.0  —  Wavefront Frontier Detection (WFD)     ║\n"
-            "║  Algorithm: arXiv:1806.03581                      ║\n"
+            "║  v4.0  —  Wavefront Frontier Detection (WFD)     ║\n"
+            "║  No initial spin — starts exploring immediately   ║\n"
             "║  Publish False to /explore/enable to pause.       ║\n"
             "╚══════════════════════════════════════════════════╝"
         )
@@ -441,45 +440,41 @@ class FrontierExplorer(Node):
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
         self.declare_parameter("occ_threshold",        10)
-        self.declare_parameter("frontier_selection",   "nearest")     # nearest / farthest
+        self.declare_parameter("frontier_selection",   "nearest")
         self.declare_parameter("obstacle_dist",        0.45)
-        self.declare_parameter("obstacle_half_angle",  50.0)          # degrees
-        self.declare_parameter("nav_timeout",          35.0)          # s
-        self.declare_parameter("spin_speed",           0.55)          # rad/s
-        self.declare_parameter("spin_duration",        12.5)          # s
-        self.declare_parameter("backup_speed",        -0.18)          # m/s
-        self.declare_parameter("backup_duration",      1.8)           # s
-        self.declare_parameter("avoid_spin_duration",  2.5)           # s
-        self.declare_parameter("recov_spin_duration",  7.0)           # s
+        self.declare_parameter("obstacle_half_angle",  50.0)
+        self.declare_parameter("nav_timeout",          45.0)
+        self.declare_parameter("backup_speed",        -0.18)
+        self.declare_parameter("backup_duration",      1.8)
+        self.declare_parameter("recov_spin_speed",     0.5)
+        self.declare_parameter("recov_spin_duration",  7.0)
         self.declare_parameter("max_consec_fail",      4)
         self.declare_parameter("costmap_clear_every",  3)
         self.declare_parameter("complete_no_frontier", 8)
-        self.declare_parameter("log_interval",        12.0)           # s
+        self.declare_parameter("log_interval",        12.0)
         self.declare_parameter("save_map_on_complete", True)
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")
 
     def _load_params(self) -> None:
         g = self.get_parameter
-        self.p_robot_frame    = g("robot_frame").value
-        self.p_map_frame      = g("map_frame").value
-        self.p_min_frontier   = g("min_frontier_size").value
-        self.p_occ_threshold  = g("occ_threshold").value
-        self.p_frontier_sel   = g("frontier_selection").value
-        self.p_obs_dist       = g("obstacle_dist").value
-        self.p_obs_half_angle = math.radians(g("obstacle_half_angle").value)
-        self.p_nav_timeout    = g("nav_timeout").value
-        self.p_spin_speed     = g("spin_speed").value
-        self.p_spin_duration  = g("spin_duration").value
-        self.p_backup_speed   = g("backup_speed").value
-        self.p_backup_dur     = g("backup_duration").value
-        self.p_avoid_spin_dur = g("avoid_spin_duration").value
-        self.p_recov_spin_dur = g("recov_spin_duration").value
-        self.p_max_consec     = g("max_consec_fail").value
-        self.p_clear_every    = g("costmap_clear_every").value
-        self.p_no_front_done  = g("complete_no_frontier").value
-        self.p_log_interval   = g("log_interval").value
-        self.p_save_map       = g("save_map_on_complete").value
-        self.p_map_path       = g("map_save_path").value
+        self.p_robot_frame     = g("robot_frame").value
+        self.p_map_frame       = g("map_frame").value
+        self.p_min_frontier    = g("min_frontier_size").value
+        self.p_occ_threshold   = g("occ_threshold").value
+        self.p_frontier_sel    = g("frontier_selection").value
+        self.p_obs_dist        = g("obstacle_dist").value
+        self.p_obs_half_angle  = math.radians(g("obstacle_half_angle").value)
+        self.p_nav_timeout     = g("nav_timeout").value
+        self.p_backup_speed    = g("backup_speed").value
+        self.p_backup_dur      = g("backup_duration").value
+        self.p_recov_spin_spd  = g("recov_spin_speed").value
+        self.p_recov_spin_dur  = g("recov_spin_duration").value
+        self.p_max_consec      = g("max_consec_fail").value
+        self.p_clear_every     = g("costmap_clear_every").value
+        self.p_no_front_done   = g("complete_no_frontier").value
+        self.p_log_interval    = g("log_interval").value
+        self.p_save_map        = g("save_map_on_complete").value
+        self.p_map_path        = g("map_save_path").value
 
     # -------------------------------------------------------------------------
     #  Callbacks
@@ -562,11 +557,12 @@ class FrontierExplorer(Node):
         min_d = float(np.min(ranges[valid]))
         return min_d < self.p_obs_dist, min_d
 
-    def _stop(self)  -> None: self._cmd_vel_pub.publish(Twist())
+    def _stop(self) -> None:
+        self._cmd_vel_pub.publish(Twist())
 
-    def _spin_cmd(self, speed: Optional[float] = None) -> None:
+    def _spin_cmd(self, speed: float) -> None:
         t = Twist()
-        t.angular.z = speed if speed is not None else self.p_spin_speed
+        t.angular.z = speed
         self._cmd_vel_pub.publish(t)
 
     def _drive(self, vx: float, wz: float = 0.0) -> None:
@@ -575,18 +571,11 @@ class FrontierExplorer(Node):
         t.angular.z = wz
         self._cmd_vel_pub.publish(t)
 
-    def _drive_forward(self, speed: float = 0.15, duration: float = 3.0) -> None:
-        """Drive forward for `duration` seconds, then return to SELECT_FRONTIER."""
-        if not hasattr(self, '_fwd_t0') or self._fwd_t0 is None:
-            self._fwd_t0 = self._now_sec()
-            self.get_logger().info(f"Driving forward at {speed} m/s for {duration}s")
-        elapsed = self._now_sec() - self._fwd_t0
-        if elapsed < duration:
-            self._drive(speed)
-        else:
-            self._stop()
-            self._fwd_t0 = None
-            self.state = State.SELECT_FRONTIER
+    @staticmethod
+    def _yaw_to_quaternion(yaw: float):
+        """Convert yaw angle to quaternion (x, y, z, w)."""
+        half = yaw * 0.5
+        return (0.0, 0.0, math.sin(half), math.cos(half))
 
     # -------------------------------------------------------------------------
     #  Map statistics
@@ -599,11 +588,9 @@ class FrontierExplorer(Node):
         free = int(np.sum(d == 0))
         occ  = int(np.sum((d > 0) & (d <= 100)))
         unk  = int(np.sum(d == -1))
-        pct  = (free + occ) / d.size * 100.0
+        total = d.size
+        pct  = (free + occ) / total * 100.0 if total > 0 else 0.0
         return free, occ, unk, pct
-
-    def _explored_pct(self) -> float:
-        return self._map_stats()[3]
 
     # -------------------------------------------------------------------------
     #  WFD Frontier Detection  (wrapper around algorithm functions)
@@ -623,7 +610,6 @@ class FrontierExplorer(Node):
         OCC_THRESHOLD = self.p_occ_threshold
 
         # Build a simple pose object for the WFD function
-        from geometry_msgs.msg import Pose
         pose = Pose()
         pose.position.x = rx
         pose.position.y = ry
@@ -680,14 +666,8 @@ class FrontierExplorer(Node):
         """
         Score frontiers based on distance and visited history.
         Supports 'nearest' and 'farthest' selection strategies.
-        Frontiers closer than 0.5m are filtered out.
+        Frontiers closer than 0.5 m are filtered out.
         """
-        # Keep visited list bounded
-        if len(self._visited) > 50:
-            trimmed = list(self._visited)[-30:]
-            self._visited.clear()
-            self._visited.extend(trimmed)
-
         result: List[Frontier] = []
         for f in frontiers:
             dist = math.hypot(f.cx - rx, f.cy - ry)
@@ -698,7 +678,6 @@ class FrontierExplorer(Node):
 
             # Distance score depends on selection strategy
             if self.p_frontier_sel == "farthest":
-                # Prefer far frontiers (like original WFD)
                 dist_score = min(1.0, dist / 10.0)
             else:
                 # Prefer near frontiers (more efficient exploration)
@@ -737,16 +716,24 @@ class FrontierExplorer(Node):
     # -------------------------------------------------------------------------
 
     def _send_goal(self, fx: float, fy: float) -> bool:
+        """Send a NavigateToPose goal with orientation facing the frontier."""
         if not self._nav_ac.server_is_ready():
-            self.get_logger().warn("Nav2 action server not ready - retry next cycle")
+            self.get_logger().warn("Nav2 action server not ready — retry next cycle")
             return False
+
+        # Compute heading from robot to goal so it approaches facing forward
+        heading = math.atan2(fy - self.ry, fx - self.rx)
+        qx, qy, qz, qw = self._yaw_to_quaternion(heading)
 
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id    = self.p_map_frame
         goal.pose.header.stamp       = self.get_clock().now().to_msg()
         goal.pose.pose.position.x    = fx
         goal.pose.pose.position.y    = fy
-        goal.pose.pose.orientation.w = 1.0
+        goal.pose.pose.orientation.x = qx
+        goal.pose.pose.orientation.y = qy
+        goal.pose.pose.orientation.z = qz
+        goal.pose.pose.orientation.w = qw
 
         self._nav_done = False
         self._nav_ok   = False
@@ -754,7 +741,9 @@ class FrontierExplorer(Node):
 
         fut = self._nav_ac.send_goal_async(goal)
         fut.add_done_callback(self._goal_resp_cb)
-        self.get_logger().info(f"Goal -> ({fx:.2f}, {fy:.2f})")
+        self.get_logger().info(
+            f"Goal → ({fx:.2f}, {fy:.2f})  heading={math.degrees(heading):.0f}°"
+        )
         return True
 
     def _goal_resp_cb(self, future) -> None:
@@ -773,7 +762,7 @@ class FrontierExplorer(Node):
         self._nav_done     = True
         self._goal_handle  = None
         if self._nav_ok:
-            self.get_logger().info("Navigation succeeded")
+            self.get_logger().info("Navigation succeeded ✓")
         else:
             self.get_logger().warn(f"Navigation failed (status={status})")
 
@@ -816,7 +805,7 @@ class FrontierExplorer(Node):
                 stderr=subprocess.DEVNULL,
             )
         except FileNotFoundError:
-            self.get_logger().warn("map_saver_cli not found - skipping map save")
+            self.get_logger().warn("map_saver_cli not found — skipping map save")
 
     # -------------------------------------------------------------------------
     #  Visualisation
@@ -862,7 +851,7 @@ class FrontierExplorer(Node):
         if free == occ == unk == 0:
             return
         self.get_logger().info(
-            f"\n--- Exploration Progress (WFD v3.0) ---\n"
+            f"\n--- Exploration Progress (WFD v4.0) ---\n"
             f"  State          : {self.state.name}\n"
             f"  Enabled        : {self._enabled}\n"
             f"  Selection      : {self.p_frontier_sel}\n"
@@ -873,7 +862,7 @@ class FrontierExplorer(Node):
         )
 
     # -------------------------------------------------------------------------
-    #  Control loop
+    #  Control loop  (5 Hz)
     # -------------------------------------------------------------------------
 
     def _ctrl_loop(self) -> None:
@@ -882,30 +871,36 @@ class FrontierExplorer(Node):
 
         now = self._now_sec()
         {
-            State.INIT_SPIN:       self._state_init_spin,
+            State.WAITING_FOR_MAP: self._state_waiting,
             State.SELECT_FRONTIER: self._state_select,
             State.NAVIGATING:      self._state_navigating,
-            State.AVOIDING:        self._state_avoiding,
             State.RECOVERING:      self._state_recovering,
             State.COMPLETE:        self._state_complete,
         }[self.state](now)
 
     # -------------------------------------------------------------------------
-    #  State: INIT_SPIN
+    #  State: WAITING_FOR_MAP  (replaces INIT_SPIN — no rotation)
     # -------------------------------------------------------------------------
 
-    def _state_init_spin(self, now: float) -> None:
-        if self._spin_t0 is None:
-            self._spin_t0 = now
-            self.get_logger().info("Initial 360 spin started...")
+    def _state_waiting(self, now: float) -> None:
+        """Wait until we have a map and a valid robot pose in TF."""
+        if self.map_data is None:
+            self.get_logger().info("Waiting for /map...", throttle_duration_sec=5.0)
+            return
 
-        if now - self._spin_t0 < self.p_spin_duration:
-            self._spin_cmd()
-        else:
-            self._stop()
-            self._spin_t0 = None
-            self.get_logger().info("Initial spin done - starting WFD exploration")
-            self.state = State.SELECT_FRONTIER
+        pose = self._robot_in_map()
+        if pose is None:
+            self.get_logger().info(
+                "Waiting for TF (map→base_link)...", throttle_duration_sec=5.0
+            )
+            return
+
+        self.rx, self.ry, self.ryaw = pose
+        self.get_logger().info(
+            f"Map and TF ready — starting WFD exploration from "
+            f"({self.rx:.2f}, {self.ry:.2f})"
+        )
+        self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: SELECT_FRONTIER  (uses WFD algorithm)
@@ -913,7 +908,8 @@ class FrontierExplorer(Node):
 
     def _state_select(self, now: float) -> None:
         if self.map_data is None:
-            self.get_logger().warn("Waiting for /map...")
+            self.get_logger().warn("Lost /map — re-entering WAITING_FOR_MAP")
+            self.state = State.WAITING_FOR_MAP
             return
 
         # Periodic costmap clear on consecutive failures
@@ -922,7 +918,7 @@ class FrontierExplorer(Node):
 
         pose = self._robot_in_map()
         if pose is None:
-            self.get_logger().warn("TF not ready (map->base_link)")
+            self.get_logger().warn("TF not ready (map→base_link)")
             return
         rx, ry, ryaw = pose
         self.rx, self.ry, self.ryaw = rx, ry, ryaw
@@ -936,7 +932,7 @@ class FrontierExplorer(Node):
                 f"No frontiers found by WFD (streak={self.recov_spins})"
             )
             if self.recov_spins >= self.p_no_front_done:
-                self.get_logger().info("No frontiers left - exploration complete!")
+                self.get_logger().info("No frontiers left — exploration complete!")
                 self.state = State.COMPLETE
             else:
                 self.state = State.RECOVERING
@@ -945,7 +941,7 @@ class FrontierExplorer(Node):
         self.recov_spins = 0
 
         if self.consec_fail >= self.p_max_consec:
-            self.get_logger().warn("Too many consecutive failures - recovery spin")
+            self.get_logger().warn("Too many consecutive failures — recovery spin")
             self.consec_fail = 0
             self.state = State.RECOVERING
             return
@@ -956,9 +952,9 @@ class FrontierExplorer(Node):
         # All frontiers too close (filtered out by _score_frontiers)
         if not scored:
             self.get_logger().warn(
-                "All frontiers too close — driving forward to explore"
+                "All frontiers too close — triggering recovery spin"
             )
-            self._drive_forward(speed=0.15, duration=3.0)
+            self.state = State.RECOVERING
             return
 
         best = scored[0]
@@ -982,12 +978,17 @@ class FrontierExplorer(Node):
         obs, dist = self._obstacle_in_sector()
         if obs and dist < self.p_obs_dist * 0.65:
             self.get_logger().warn(
-                f"Obstacle at {dist:.2f} m - emergency avoidance"
+                f"Obstacle at {dist:.2f} m — emergency avoidance (backing up)"
             )
             self._cancel_nav()
-            self._avoid_t0    = now
-            self._avoid_phase = 0
-            self.state = State.AVOIDING
+            self._avoid_t0 = now
+            self.state = State.NAVIGATING   # stay in NAVIGATING for back-up
+            self._do_backup(now)
+            return
+
+        # Handle active backup manoeuvre
+        if self._avoid_t0 is not None:
+            self._do_backup(now)
             return
 
         # Navigation result arrived via callback
@@ -1006,37 +1007,27 @@ class FrontierExplorer(Node):
             self._nav_t0 is not None
             and (now - self._nav_t0) > self.p_nav_timeout
         ):
-            self.get_logger().warn("Navigation timeout - cancelling goal")
+            self.get_logger().warn("Navigation timeout — cancelling goal")
             self._cancel_nav()
             self.consec_fail += 1
             self.total_fail  += 1
             self._nav_done    = False
             self.state = State.SELECT_FRONTIER
 
-    # -------------------------------------------------------------------------
-    #  State: AVOIDING
-    # -------------------------------------------------------------------------
+    def _do_backup(self, now: float) -> None:
+        """Back up briefly after emergency obstacle detection."""
+        if self._avoid_t0 is None:
+            return
 
-    def _state_avoiding(self, now: float) -> None:
-        if self._avoid_phase == 0:
-            # Phase 0: back up
-            elapsed = now - (self._avoid_t0 or now)
-            if elapsed < self.p_backup_dur:
-                self._drive(self.p_backup_speed)
-            else:
-                self._avoid_phase = 1
-                self._avoid_t0    = now
-                self._spin_cmd(self.p_spin_speed * 1.4)
+        elapsed = now - self._avoid_t0
+        if elapsed < self.p_backup_dur:
+            self._drive(self.p_backup_speed)
         else:
-            # Phase 1: spin to clear obstacle
-            elapsed = now - (self._avoid_t0 or now)
-            if elapsed < self.p_avoid_spin_dur:
-                self._spin_cmd(self.p_spin_speed * 1.4)
-            else:
-                self._stop()
-                self.get_logger().info("Avoidance manoeuvre complete")
-                self.consec_fail += 1
-                self.state = State.SELECT_FRONTIER
+            self._stop()
+            self._avoid_t0 = None
+            self.get_logger().info("Backup complete — re-selecting frontier")
+            self.consec_fail += 1
+            self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
     #  State: RECOVERING
@@ -1048,7 +1039,7 @@ class FrontierExplorer(Node):
             self.get_logger().info("Recovery spin...")
 
         if now - self._recov_t0 < self.p_recov_spin_dur:
-            self._spin_cmd()
+            self._spin_cmd(self.p_recov_spin_spd)
         else:
             self._stop()
             self._recov_t0 = None
@@ -1067,9 +1058,11 @@ class FrontierExplorer(Node):
         self._stop()
         _, _, _, pct = self._map_stats()
         self.get_logger().info(
-            f"\n=== EXPLORATION COMPLETE (WFD v3.0) ===\n"
+            f"\n══════════════════════════════════════\n"
+            f"  EXPLORATION COMPLETE (WFD v4.0)\n"
             f"  Explored area  : {pct:.1f}%\n"
-            f"  Total failures : {self.total_fail}"
+            f"  Total failures : {self.total_fail}\n"
+            f"══════════════════════════════════════"
         )
 
         # Cancel all timers cleanly
