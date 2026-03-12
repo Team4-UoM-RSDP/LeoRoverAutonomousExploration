@@ -148,35 +148,10 @@
          Interior divider walls — create corridors / zones to explore
     ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- Horizontal divider (centre, gap in middle for corridor) -->
-    <model name="divider_H_left">
-      <static>true</static>
-      <pose>-2.5 1.5 1.25 0 0 0</pose>
-      <link name="link">
-        <collision name="c"><geometry><box><size>5.0 0.2 2.5</size></box></geometry></collision>
-        <visual name="v">
-          <geometry><box><size>5.0 0.2 2.5</size></box></geometry>
-          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
-
-    <model name="divider_H_right">
-      <static>true</static>
-      <pose>3.5 1.5 1.25 0 0 0</pose>
-      <link name="link">
-        <collision name="c"><geometry><box><size>3.0 0.2 2.5</size></box></geometry></collision>
-        <visual name="v">
-          <geometry><box><size>3.0 0.2 2.5</size></box></geometry>
-          <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
-
-    <!-- Vertical divider (right side, creates pocket room) -->
+    <!-- Vertical divider (right side, pushed further right to make central area huge) -->
     <model name="divider_V_right">
       <static>true</static>
-      <pose>2.0 3.5 1.25 0 0 0</pose>
+      <pose>4.0 2.0 1.25 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.2 4.0 2.5</size></box></geometry></collision>
         <visual name="v">
@@ -186,27 +161,27 @@
       </link>
     </model>
 
-    <!-- Small alcove wall bottom-left -->
-    <model name="divider_alcove">
+    <!-- Horizontal divider (top left, pushed to edge) -->
+    <model name="divider_H_top">
       <static>true</static>
-      <pose>-3.0 -2.5 1.25 0 0 1.5708</pose>
+      <pose>-3.5 4.0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>0.2 3.0 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>3.0 0.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 3.0 2.5</size></box></geometry>
+          <geometry><box><size>3.0 0.2 2.5</size></box></geometry>
           <material><ambient>0.55 0.5 0.45 1</ambient><diffuse>0.55 0.5 0.45 1</diffuse></material>
         </visual>
       </link>
     </model>
 
+
     <!-- ═══════════════════════════════════════════════════════════════
-         Box obstacles (0.5 x 0.5 x 0.8 m, static)
-         To add more at runtime: see README for gz service command
+         Box obstacles — Moved far apart to simplify navigation
     ═══════════════════════════════════════════════════════════════════ -->
 
     <model name="box_1">
       <static>true</static>
-      <pose>-4.0 4.0 0.4 0 0 0</pose>
+      <pose>-4.5 5.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -218,7 +193,7 @@
 
     <model name="box_2">
       <static>true</static>
-      <pose>1.0 4.5 0.4 0 0 0.5</pose>
+      <pose>4.0 4.5 0.4 0 0 0.5</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -230,7 +205,7 @@
 
     <model name="box_3">
       <static>true</static>
-      <pose>-4.5 -1.0 0.4 0 0 0</pose>
+      <pose>-4.5 -4.5 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.8 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -242,7 +217,7 @@
 
     <model name="box_4">
       <static>true</static>
-      <pose>-1.0 -3.5 0.4 0 0 0.3</pose>
+      <pose>-2.0 -4.5 0.4 0 0 0.3</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -254,7 +229,7 @@
 
     <model name="box_5">
       <static>true</static>
-      <pose>2.5 -2.5 0.4 0 0 0</pose>
+      <pose>4.5 -4.5 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -266,7 +241,7 @@
 
     <model name="box_6">
       <static>true</static>
-      <pose>4.5 -4.0 0.4 0 0 0.8</pose>
+      <pose>4.5 -2.0 0.4 0 0 0.8</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.8 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -278,7 +253,7 @@
 
     <model name="box_7">
       <static>true</static>
-      <pose>4.5 3.0 0.4 0 0 0</pose>
+      <pose>2.0 4.5 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -290,7 +265,7 @@
 
     <model name="box_8">
       <static>true</static>
-      <pose>-1.5 0.5 0.4 0 0 0</pose>
+      <pose>-4.5 2.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 1.2 0.8</size></box></geometry></collision>
         <visual name="v">
