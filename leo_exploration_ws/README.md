@@ -1,8 +1,8 @@
-# Leo Rover Autonomous Exploration
+# Leo Rover Autonomous Exploration (v3.0)
 
 **ROS 2 Jazzy · Ubuntu 24.04 · Gazebo Harmonic**
 
-Frontier-based autonomous exploration for Leo Rover — works in both simulation and on the real robot with the same exploration code.
+Frontier-based autonomous exploration for Leo Rover — powered by a **Wavefront Frontier Detection (WFD)** algorithm. Works identically in simulation and on the real robot, using a strict **no-rotation** policy to maintain lidar stability.
 
 ---
 
@@ -36,44 +36,38 @@ map ──(SLAM)──▶ odom ──(DiffDrive/firmware)──▶ base_footprin
 | Lidar | Gazebo gpu_lidar plugin → bridge → `/scan` | RPLidar A2M12 → `/scan` |
 | Odometry | Gazebo DiffDrive → bridge → `/odom` + TF | Leo firmware → `/odom` + TF |
 | TF (static) | `robot_state_publisher` from URDF | Static TF node |
-| Exploration | `frontier_explorer` (same code) | `frontier_explorer` (same code) |
+| Exploration | `frontier_explorer` (WFD algorithm) | `frontier_explorer` (WFD algorithm) |
+
+---
+
+## What's New in v3.0
+
+- **WFD (Wavefront Frontier Detection)**: Implements a BFS-based wavefront expansion algorithm for highly accurate frontier centroid detection (replacing the old NumPy morphology approach). 
+- **No-Rotation Policy**: The robot will *never* spin in place. This prevents the lidar from losing tracking:
+  - Startup: Drives straight forward briefly (`INIT_FORWARD`) to seed the map instead of a 360° spin.
+  - Avoidance: Backs up and takes a gentle curve.
+  - Recovery: Drives forward slowly to expose new frontiers.
+- **180° Front-Only Lidar Filter**: Ignores scans behind the robot (angles beyond ±90°) to prevent false positives from the real Leo Rover chassis pillars blocking the rear lidar view.
+- **Anti Ghost-Wall**: On obstacle encounter, the system backs up and curves *without* regenerating a new arbitrary frontier. Multi-factor frontier scoring heavily penalizes recently visited spots to prevent endless returning/oscillation.
 
 ---
 
 ## Quick Start (Simulation)
 
+```bash
+# Clean up old processes if needed
 pkill -f "gz sim" ; pkill -f nav2 ; pkill -f slam ; pkill -f frontier ; pkill -f rviz2
-sleep 3
+
+# Build & Source
 cd ~/ros2_ws
 colcon build --packages-select leo_exploration
 source install/setup.bash
-ros2 launch leo_exploration sim_exploration_launch.py
 
-
-### 1. Install Dependencies (once)
-
-```bash
-cd ~/ros2_ws/src/leo_exploration_ws/src/leo_exploration/scripts
-chmod +x install_sim_deps.sh
-./install_sim_deps.sh
-```
-
-### 2. Build
-
-```bash
-cd ~/ros2_ws
-source /opt/ros/jazzy/setup.bash
-colcon build --packages-select leo_exploration
-source install/setup.bash
-```
-
-### 3. Launch
-
-```bash
+# Launch Simulation
 ros2 launch leo_exploration sim_exploration_launch.py
 ```
 
-**Startup timeline (fully automatic):**
+### Startup timeline (fully automatic):
 
 | Time | Component |
 |------|-----------|
@@ -83,12 +77,12 @@ ros2 launch leo_exploration sim_exploration_launch.py
 | t=12s | SLAM Toolbox (online async mapping) |
 | t=15s | RViz2 |
 | t=22s | Nav2 (controller, planner, behavior, bt_navigator) |
-| t=40s | Frontier Explorer → 360° spin → autonomous exploration |
+| t=40s | Frontier Explorer → Initial forward drive → Autonomous WFD exploration |
 
 ### Launch Options
 
 ```bash
-# Headless (no Gazebo GUI — faster, lower GPU)
+# Headless (no Gazebo GUI — faster, lower GPU usage)
 ros2 launch leo_exploration sim_exploration_launch.py gz_gui:=false
 
 # Custom world file
@@ -107,7 +101,7 @@ ros2 launch leo_exploration sim_exploration_launch.py rviz:=false
 
 ### Can I use this code directly on the real Leo Rover?
 
-**Yes — with one important caveat.** The `frontier_explorer` node is 100% shared between simulation and real robot. However, the real-robot launch file (`exploration_launch.py`) currently uses Nav2's `navigation_launch.py`, which has a known TF remapping issue in Jazzy. You should apply the same direct-node-launch approach used in the simulation launch.
+**Yes.** The `frontier_explorer` node is 100% shared between simulation and the real robot. Just launch `exploration_launch.py` instead of the simulation launch.
 
 ### Steps to deploy on real hardware
 
@@ -127,18 +121,7 @@ ros2 launch leo_exploration exploration_launch.py
 ros2 launch leo_exploration exploration_launch.py serial_port:=/dev/ttyUSB1
 ```
 
-### Key differences from simulation
-
-| | Simulation | Real Robot |
-|--|-----------|------------|
-| `use_sim_time` | `true` | `false` |
-| Nav2 params `use_sim_time` | `true` | needs `false` |
-| Lidar source | Gazebo plugin | RPLidar node |
-| Odometry source | Gazebo DiffDrive | Leo firmware |
-
-> **⚠️ Important**: The `nav2_params.yaml` currently has `use_sim_time: true` (set for simulation). For real robot use, either change it back to `false` or create a separate params file for the real robot (recommended).
-
-> **⚠️ Nav2 launch**: The real-robot `exploration_launch.py` still uses `IncludeLaunchDescription(navigation_launch.py)`. If you encounter "action server inactive" errors on real hardware, apply the same direct node launch approach from `sim_exploration_launch.py`.
+> **⚠️ Important**: Make sure your lidar is physically mounted as configured. The system only looks at the front 180 degrees. If mounted backwards, you will need to adjust the static TF transform logic in the launch file.
 
 ---
 
@@ -169,14 +152,7 @@ ros2 topic hz /scan
 
 ## Adding Obstacles (Simulation)
 
-### Method A: Gazebo GUI (drag & drop)
-
-1. Click the shape icon in the Gazebo toolbar
-2. Click to place in the world
-3. Use the Inspector panel to resize/reposition
-4. Enable "Static" to fix in place
-
-### Method B: Command line
+You can run `scripts/obstacle_manager.sh` to dynamically inject or remove obstacles into the Gazebo sim without restarting.
 
 ```bash
 chmod +x scripts/obstacle_manager.sh
@@ -194,25 +170,7 @@ chmod +x scripts/obstacle_manager.sh
 ./scripts/obstacle_manager.sh clear
 ```
 
-### Method C: Edit world file (permanent)
-
-Add models to `worlds/exploration_test.world` before the closing `</world>` tag:
-
-```xml
-<model name="my_box">
-  <static>true</static>
-  <pose>3.0 2.0 0.4 0 0 0</pose>
-  <link name="link">
-    <collision name="c">
-      <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
-    </collision>
-    <visual name="v">
-      <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
-      <material><ambient>1 0 0 1</ambient></material>
-    </visual>
-  </link>
-</model>
-```
+Alternatively, you can edit `worlds/exploration_test.world` or drag-and-drop objects using the Gazebo Harmonic GUI.
 
 ---
 
@@ -229,42 +187,16 @@ Add models to `worlds/exploration_test.world` before the closing `</world>` tag:
 
 ---
 
-## File Structure
-
-```
-leo_exploration/
-├── config/
-│   ├── nav2_params.yaml            # Nav2 parameters (use_sim_time: true)
-│   ├── slam_toolbox_params.yaml    # SLAM Toolbox configuration
-│   ├── rviz2_config.rviz           # RViz2 display config (with RobotModel)
-│   └── ros_gz_bridge.yaml          # Gazebo↔ROS topic bridge mapping
-├── launch/
-│   ├── exploration_launch.py       # Real robot launch
-│   └── sim_exploration_launch.py   # Simulation launch (direct Nav2 nodes)
-├── leo_exploration/
-│   └── frontier_explorer.py        # Frontier-based exploration node
-├── urdf/
-│   └── leo_rover.urdf              # Robot description (links, joints, plugins)
-├── worlds/
-│   └── exploration_test.world      # 12×12m test environment with obstacles
-├── scripts/
-│   ├── install_sim_deps.sh         # Dependency installer
-│   └── obstacle_manager.sh         # Runtime obstacle management
-├── package.xml
-└── setup.py
-```
-
----
-
 ## Exploration Algorithm
 
-The `frontier_explorer` node implements frontier-based exploration:
+The `frontier_explorer` node implements WFD frontier-based exploration through a robust state machine:
 
-1. **INIT_SPIN** — 360° spin to get initial map
-2. **SELECT_FRONTIER** — Detect frontier cells (free cells adjacent to unknown), cluster them, score by info gain + distance + direction, filter out frontiers < 0.5m
-3. **NAVIGATING** — Send goal to Nav2, with emergency obstacle avoidance
-4. **RECOVERING** — Recovery spin when navigation fails repeatedly
-5. **COMPLETE** — Declared when no frontiers remain for 8 consecutive checks
+1. **INIT_FORWARD** — Initial short drive forward (no spin) to initialize the lidar scan in the SLAM map.
+2. **SELECT_FRONTIER** — Execute WFD BFS on the occupancy grid. Convert frontier clusters to centroids. Apply Costmap lethal-zone filtering, then score by `info_gain + distance + direction - visit_penalty`.
+3. **NAVIGATING** — Dispatch Nav2 goal and monitor obstacle proximity.
+4. **AVOIDING** — If an obstacle gets too close, cancel Nav2, back up, and execute a mild forward curve (no spin) to get clear.
+5. **RECOVERING** — If valid frontiers dwindle or multiple consecutive navigation failures occur, drive forward slowly (no spin) to expose unseen areas.
+6. **COMPLETE** — Declared when no frontiers remain for 8 consecutive checks. The map is then automatically saved to disk.
 
 Scoring formula:
 ```
