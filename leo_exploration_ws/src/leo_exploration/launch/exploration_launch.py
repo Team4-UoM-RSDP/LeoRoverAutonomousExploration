@@ -144,7 +144,7 @@ def generate_launch_description():
     explorer_node = TimerAction(
         period=18.0,
         actions=[
-            LogInfo(msg="[Explorer] Starting frontier exploration…"),
+            LogInfo(msg="[Explorer] Starting WFD frontier exploration…"),
             Node(
                 package="leo_exploration",
                 executable="frontier_explorer",
@@ -154,9 +154,14 @@ def generate_launch_description():
                     "use_sim_time":           use_sim_time,
                     "robot_frame":            "base_link",
                     "map_frame":              "map",
+                    # WFD algorithm parameters
                     "min_frontier_size":      5,
+                    "occ_threshold":          10,
+                    "frontier_selection":     "nearest",   # nearest / farthest
+                    # Obstacle avoidance
                     "obstacle_dist":          0.45,
                     "obstacle_half_angle":    50.0,
+                    # Navigation
                     "nav_timeout":            35.0,
                     "spin_speed":             0.55,
                     "spin_duration":          12.5,
@@ -168,7 +173,7 @@ def generate_launch_description():
                     "costmap_clear_every":    3,
                     "complete_no_frontier":   8,
                     "log_interval":          12.0,
-                    # P2: map auto-save on completion
+                    # Map auto-save on completion
                     "save_map_on_complete":   True,
                     "map_save_path":          "/tmp/leo_explored_map",
                 }],
