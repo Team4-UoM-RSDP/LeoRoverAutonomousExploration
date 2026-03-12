@@ -156,19 +156,21 @@ def generate_launch_description():
                     "map_frame":              "map",
                     "min_frontier_size":      5,
                     "obstacle_dist":          0.45,
-                    "obstacle_half_angle":    50.0,
+                    "scan_half_angle":        90.0,      # 180° front-only lidar
                     "nav_timeout":            35.0,
-                    "spin_speed":             0.55,
-                    "spin_duration":          12.5,
+                    "init_forward_speed":     0.15,      # no spin, drive forward
+                    "init_forward_duration":  3.0,
                     "backup_speed":          -0.18,
                     "backup_duration":        1.8,
-                    "avoid_spin_duration":    2.5,
-                    "recov_spin_duration":    7.0,
+                    "avoid_curve_speed":      0.10,      # gentle curve, no spin
+                    "avoid_curve_angular":    0.5,
+                    "avoid_curve_duration":   2.0,
+                    "recov_forward_speed":    0.12,      # forward drive, no spin
+                    "recov_forward_duration": 4.0,
                     "max_consec_fail":        4,
                     "costmap_clear_every":    3,
                     "complete_no_frontier":   8,
                     "log_interval":          12.0,
-                    # P2: map auto-save on completion
                     "save_map_on_complete":   True,
                     "map_save_path":          "/tmp/leo_explored_map",
                 }],
