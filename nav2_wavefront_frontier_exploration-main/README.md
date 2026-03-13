@@ -1,7 +1,7 @@
 # Wavefront Frontier Detection
 
  ### Implementation of Frontier Exploration based on this research paper: https://arxiv.org/ftp/arxiv/papers/1806/1806.03581.pdf
-
+https://github.com/SeanReg/nav2_wavefront_frontier_exploration/tree/main
 
 ## Overview
 
@@ -39,5 +39,6 @@ Works with Nav2's Turtlebot Simulation: https://navigation.ros.org/getting_start
 Once the Turtlebot Simulation has launch, in a separate window run:
     
     ros2 run nav2_wfd explore
+
 
 
