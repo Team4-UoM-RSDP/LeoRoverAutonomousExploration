@@ -218,3 +218,4 @@ Scoring formula:
 ```
 score = 0.45 × info_gain + 0.35 × distance_score + 0.15 × direction_score − visit_penalty
 ```
+还有要保证车身周围有一个安全距离，一旦发现车的四周小于这个距离就立刻远离防止碰撞，我看到模拟车子会直接开到箱子那边然后检测到有障碍物就开始旋转车身就撞上了，避免这个问题的发生在真机和模拟中
