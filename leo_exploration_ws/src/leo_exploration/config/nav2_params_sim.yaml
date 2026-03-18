@@ -169,8 +169,8 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       rolling_window: true
-      width: 3
-      height: 3
+      width: 6
+      height: 6
       resolution: 0.05
       # Leo Rover exact bounds: 445 mm long × 424 mm wide → half: 0.2225 × 0.212
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"

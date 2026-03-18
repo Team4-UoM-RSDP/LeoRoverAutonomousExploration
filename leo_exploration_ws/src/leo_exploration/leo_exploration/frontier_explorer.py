@@ -459,9 +459,9 @@ class FrontierExplorer(Node):
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
-        self.declare_parameter("obstacle_dist",        0.55)
-        self.declare_parameter("scan_half_angle",      90.0)    # degrees — 180° front scan
-        self.declare_parameter("safety_radius",        0.50)    # full-360° safety perimeter
+        self.declare_parameter("obstacle_dist",        0.45)
+        self.declare_parameter("scan_half_angle",      60.0)    # degrees — 120° front scan
+        self.declare_parameter("safety_radius",        0.35)    # full-360° safety perimeter
         self.declare_parameter("nav_timeout",          35.0)    # s
         self.declare_parameter("init_forward_speed",   0.15)    # m/s
         self.declare_parameter("init_forward_duration", 3.0)    # s
@@ -1151,6 +1151,7 @@ class FrontierExplorer(Node):
             else:
                 self._stop()
                 self.get_logger().info("Avoidance manoeuvre complete (no spin)")
+                self._clear_costmaps()
                 self.consec_fail += 1
                 self.state = State.SELECT_FRONTIER
 
@@ -1165,6 +1166,7 @@ class FrontierExplorer(Node):
         """
         if self._recov_t0 is None:
             self._recov_t0 = now
+            self._clear_costmaps()
             self.get_logger().info(
                 f"Recovery: driving forward at {self.p_recov_speed} m/s "
                 f"for {self.p_recov_dur}s (no spin)"

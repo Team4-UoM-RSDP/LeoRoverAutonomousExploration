@@ -14,7 +14,7 @@ bt_navigator:
   ros__parameters:
     use_sim_time: false
     global_frame: map
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     odom_topic: /odometry/filtered
     bt_loop_duration: 10
     default_server_timeout: 20
@@ -132,7 +132,7 @@ behavior_server:
     assisted_teleop:
       plugin: "nav2_behaviors::AssistedTeleop"
     global_frame: odom
-    robot_base_frame: base_link
+    robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
@@ -167,10 +167,10 @@ local_costmap:
       update_frequency: 5.0
       publish_frequency: 2.0
       global_frame: odom
-      robot_base_frame: base_link
+      robot_base_frame: base_footprint
       rolling_window: true
-      width: 3
-      height: 3
+      width: 5
+      height: 5
       resolution: 0.05
       # Leo Rover exact bounds: 445 mm long × 424 mm wide → half: 0.2225 × 0.212
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"
@@ -209,7 +209,7 @@ global_costmap:
       update_frequency: 1.0
       publish_frequency: 1.0
       global_frame: map
-      robot_base_frame: base_link
+      robot_base_frame: base_footprint
       resolution: 0.05
       track_unknown_space: true    # ← keep unknown cells as 255 in costmap
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"
@@ -272,7 +272,7 @@ waypoint_follower:
 collision_monitor:
   ros__parameters:
     use_sim_time: false
-    base_frame_id: "base_link"
+    base_frame_id: "base_footprint"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "/cmd_vel"

@@ -215,13 +215,13 @@ def generate_launch_description():
                             output="screen",
                             parameters=[{
                                 "use_sim_time":           use_sim_time,
-                                "robot_frame":            "base_link",
+                                "robot_frame":            "base_footprint",
                                 "map_frame":              "map",
                                 "cmd_vel_topic":          "/cmd_vel",
                                 "min_frontier_size":      5,
-                                "obstacle_dist":          0.55,
-                                "scan_half_angle":        90.0,      # 180° front-only lidar
-                                "safety_radius":          0.50,      # full 360° safety perimeter
+                                "obstacle_dist":          0.45,
+                                "scan_half_angle":        60.0,      # 120° front-only lidar
+                                "safety_radius":          0.35,      # full 360° safety perimeter
                                 "nav_timeout":            35.0,
                                 "init_forward_speed":     0.15,      # no spin, drive forward
                                 "init_forward_duration":  3.0,

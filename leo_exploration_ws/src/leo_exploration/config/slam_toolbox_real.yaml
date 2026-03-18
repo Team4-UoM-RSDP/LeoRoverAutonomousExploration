@@ -17,7 +17,7 @@ slam_toolbox:
     # ── TF frames ─────────────────────────────────────────────────────────────
     odom_frame:       odom
     map_frame:        map
-    base_frame:       base_link
+    base_frame:       base_footprint
     scan_topic:       /scan
     use_map_saver:    false
     mode:             mapping          # mapping | localization
