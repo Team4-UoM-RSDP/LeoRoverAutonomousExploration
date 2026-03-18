@@ -1,26 +1,5 @@
 <?xml version="1.0" ?>
-<!--
-  Leo Rover Exploration Test World
-  Gazebo Harmonic (gz-sim 8.x)  |  ROS2 Jazzy  |  Ubuntu 24.04
 
-  Layout: 12 x 12 m indoor room divided into 3 corridor zones
-  with 8 movable box obstacles scattered around.
-
-  Coordinate origin (0,0,0) = robot spawn point.
-
-         -6m          0          +6m
-    +6m  ┌──────────────────────────┐
-         │    ┌──┐          ┌──┐   │
-         │    │B1│  corridor│B2│   │
-         │    └──┘          └──┘   │
-         │         ┌──wall──┐      │
-     0m  │         │        │      │
-         │         └────────┘      │
-         │  ┌──┐                   │
-         │  │B3│   ┌──┐  ┌──┐     │
-         │  └──┘   │B4│  │B5│     │
-    -6m  └──────────────────────────┘
--->
 <sdf version="1.9">
   <world name="leo_exploration_world">
 
@@ -241,7 +220,7 @@
 
     <model name="box_6">
       <static>true</static>
-      <pose>0.0 1.3 0.4 0 0 0.8</pose>
+      <pose>0.0 1.1 0.4 0 0 0.8</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.8 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
