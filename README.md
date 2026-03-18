@@ -15,45 +15,6 @@ A frontier-based autonomous exploration system for the [Leo Rover](https://www.l
 - **Automatic map saving** when exploration is complete
 - **Anti-revisit scoring** to reduce repeated visits to the same regions
 
-## Repository Structure
-
-```text
-LeoRoverAutonomousExploration/
-├── README.md
-├── leo_exploration_ws/
-│   └── src/
-│       └── leo_exploration/
-│           ├── leo_exploration/
-│           │   ├── frontier_explorer.py
-│           │   └── __init__.py
-│           ├── launch/
-│           │   ├── sim_exploration_launch.py
-│           │   └── exploration_launch.py
-│           ├── config/
-│           │   ├── nav2_params.yaml
-│           │   ├── slam_toolbox_params.yaml
-│           │   ├── ekf.yaml
-│           │   ├── ros_gz_bridge.yaml
-│           │   └── rviz2_config.rviz
-│           ├── urdf/
-│           │   └── leo_rover.urdf
-│           ├── worlds/
-│           │   └── exploration_test.world
-│           ├── scripts/
-│           │   ├── install_sim_deps.sh
-│           │   ├── obstacle_manager.sh
-│           │   └── run_sim.sh
-│           ├── package.xml
-│           ├── setup.py
-│           └── setup.cfg
-└── nav2_wavefront_frontier_exploration-main/
-    ├── nav2_wfd/
-    │   └── wavefront_frontier.py
-    ├── package.xml
-    ├── setup.py
-    └── LICENSE
-````
-
 ## Requirements
 
 | Component | Version                 |
