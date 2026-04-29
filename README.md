@@ -90,7 +90,27 @@ ros2 launch leo_exploration sim_exploration_launch.py spawn_x:=2.0 spawn_y:=1.0
 
 ## Run on the Real Robot
 
-Make sure the RPLidar is connected and accessible:
+This repository uses a split deployment for the physical robot:
+
+* The Leo Rover Pi keeps running the LeoOS base stack for drivetrain, IMU, and `odom -> base_footprint -> base_link`.
+* The development machine runs the USB RPLidar, SLAM Toolbox, Nav2, `frontier_explorer`, and RViz.
+
+### 1. Confirm the Pi base stack is online
+
+On the Pi, the LeoOS user services should be active and must share the same ROS 2 network settings as the development machine.
+
+On the development machine, verify that you can already see the rover base stack before starting this package:
+
+```bash
+ros2 node list
+ros2 topic list | grep -E '/tf|/odom|/odometry'
+```
+
+If those commands do not show the Pi-side base nodes and TF topics, fix the Pi ROS service environment first.
+
+### 2. Start the real-robot exploration stack on the development machine
+
+Make sure the RPLidar is connected to the development machine and accessible:
 
 ```bash
 sudo chmod 666 /dev/ttyUSB0
@@ -106,6 +126,23 @@ To use a different lidar serial port:
 ```bash
 ros2 launch leo_exploration exploration_launch.py serial_port:=/dev/ttyUSB1
 ```
+
+Useful real-robot launch options:
+
+```bash
+# Skip RViz on the development machine
+ros2 launch leo_exploration exploration_launch.py rviz:=false
+
+# Reuse an externally published scan topic instead of launching the local lidar
+ros2 launch leo_exploration exploration_launch.py launch_lidar:=false scan_topic:=/scan
+
+# Override the lidar frame name
+ros2 launch leo_exploration exploration_launch.py laser_frame:=laser
+```
+
+The legacy `step1_lidar.launch.py`, `step2_slam.launch.py`, and `step3_nav_explorer.launch.py`
+files are kept only as diagnostic entry points. The supported end-to-end real-robot path is
+`exploration_launch.py`.
 
 ## System Overview
 

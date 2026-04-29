@@ -39,7 +39,12 @@ import rclpy
 import rclpy.time
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Twist
@@ -426,7 +431,7 @@ class FrontierExplorer(Node):
         self.create_subscription(
             OccupancyGrid, "/global_costmap/costmap", self._costmap_cb, tl_qos)
         self.create_subscription(
-            LaserScan, "/scan", self._scan_cb, 10)
+            LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data)
         self.create_subscription(
             Bool, "/explore/enable", self._enable_cb, 10)
 
@@ -1269,9 +1274,14 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node._stop()
+        try:
+            if rclpy.ok():
+                node._stop()
+        except Exception:
+            pass
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
