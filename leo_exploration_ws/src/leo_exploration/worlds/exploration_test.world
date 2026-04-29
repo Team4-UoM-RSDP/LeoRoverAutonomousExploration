@@ -51,12 +51,12 @@
       <link name="link">
         <collision name="collision">
           <geometry>
-            <plane><normal>0 0 1</normal><size>30 30</size></plane>
+            <plane><normal>0 0 1</normal><size>40 40</size></plane>
           </geometry>
         </collision>
         <visual name="visual">
           <geometry>
-            <plane><normal>0 0 1</normal><size>30 30</size></plane>
+            <plane><normal>0 0 1</normal><size>40 40</size></plane>
           </geometry>
           <material>
             <ambient>0.8 0.8 0.8 1</ambient>
@@ -66,58 +66,58 @@
       </link>
     </model>
 
-    <!-- ═══════════════════════════════════════════════════════════════
-         Outer walls  (6.8 x 3.6 m room, wall thickness 0.2 m, height 2.5 m)
-         Named: wall_N, wall_S, wall_E, wall_W
-    ═══════════════════════════════════════════════════════════════════ -->
+     <!-- ═══════════════════════════════════════════════════════════════
+          Outer walls  (12 x 12 m room, wall thickness 0.2 m, height 2.5 m)
+          Named: wall_N, wall_S, wall_E, wall_W
+     ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- North wall  y=+1.8 -->
-    <model name="wall_N">
+     <!-- North wall  y=+6.0 -->
+     <model name="wall_N">
       <static>true</static>
-      <pose>0 1.8 1.25 0 0 0</pose>
+      <pose>0 6.0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>7.0 0.2 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>12.2 0.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>7.0 0.2 2.5</size></box></geometry>
+          <geometry><box><size>12.2 0.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <!-- South wall  y=-1.8 -->
+    <!-- South wall  y=-6.0 -->
     <model name="wall_S">
       <static>true</static>
-      <pose>0 -1.8 1.25 0 0 0</pose>
+      <pose>0 -6.0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>7.0 0.2 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>12.2 0.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>7.0 0.2 2.5</size></box></geometry>
+          <geometry><box><size>12.2 0.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <!-- East wall  x=+3.4 -->
+    <!-- East wall  x=+6.0 -->
     <model name="wall_E">
       <static>true</static>
-      <pose>3.4 0 1.25 0 0 0</pose>
+      <pose>6.0 0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>0.2 3.8 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>0.2 12.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 3.8 2.5</size></box></geometry>
+          <geometry><box><size>0.2 12.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
     </model>
 
-    <!-- West wall  x=-3.4 -->
+    <!-- West wall  x=-6.0 -->
     <model name="wall_W">
       <static>true</static>
-      <pose>-3.4 0 1.25 0 0 0</pose>
+      <pose>-6.0 0 1.25 0 0 0</pose>
       <link name="link">
-        <collision name="c"><geometry><box><size>0.2 3.8 2.5</size></box></geometry></collision>
+        <collision name="c"><geometry><box><size>0.2 12.2 2.5</size></box></geometry></collision>
         <visual name="v">
-          <geometry><box><size>0.2 3.8 2.5</size></box></geometry>
+          <geometry><box><size>0.2 12.2 2.5</size></box></geometry>
           <material><ambient>0.6 0.55 0.5 1</ambient><diffuse>0.6 0.55 0.5 1</diffuse></material>
         </visual>
       </link>
@@ -155,12 +155,12 @@
 
 
     <!-- ═══════════════════════════════════════════════════════════════
-         Box obstacles — Repositioned for smaller room, guaranteeing >1.0m gaps
+         Box obstacles — Repositioned for larger room, guaranteeing wider gaps
     ═══════════════════════════════════════════════════════════════════ -->
 
     <model name="box_1">
       <static>true</static>
-      <pose>-2.0 1.0 0.4 0 0 0</pose>
+      <pose>-4.0 4.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -172,7 +172,7 @@
 
     <model name="box_2">
       <static>true</static>
-      <pose>2.0 1.0 0.4 0 0 0.5</pose>
+      <pose>4.0 4.0 0.4 0 0 0.5</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -184,7 +184,7 @@
 
     <model name="box_3">
       <static>true</static>
-      <pose>-2.0 -1.0 0.4 0 0 0</pose>
+      <pose>-4.0 -4.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.8 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -196,7 +196,7 @@
 
     <model name="box_4">
       <static>true</static>
-      <pose>2.0 -1.0 0.4 0 0 0.3</pose>
+      <pose>4.0 -4.0 0.4 0 0 0.3</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -208,7 +208,7 @@
 
     <model name="box_5">
       <static>true</static>
-      <pose>0.0 -1.3 0.4 0 0 0</pose>
+      <pose>0.0 -5.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -220,7 +220,7 @@
 
     <model name="box_6">
       <static>true</static>
-      <pose>0.0 1.1 0.4 0 0 0.8</pose>
+      <pose>0.0 5.0 0.4 0 0 0.8</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.8 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -232,7 +232,7 @@
 
     <model name="box_7">
       <static>true</static>
-      <pose>-3.0 0.0 0.4 0 0 0</pose>
+      <pose>-5.0 0.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 0.5 0.8</size></box></geometry></collision>
         <visual name="v">
@@ -244,7 +244,7 @@
 
     <model name="box_8">
       <static>true</static>
-      <pose>3.0 0.0 0.4 0 0 0</pose>
+      <pose>5.0 0.0 0.4 0 0 0</pose>
       <link name="link">
         <collision name="c"><geometry><box><size>0.5 1.2 0.8</size></box></geometry></collision>
         <visual name="v">

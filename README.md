@@ -113,52 +113,45 @@ ros2 topic hz /merged_odom
 
 If those commands do not show the Pi-side base nodes and TF topics, fix the Pi ROS service environment first. The Pi should not run its own RPLidar node in this split mode.
 
-### 2. Start the real-robot exploration stack on the development machine
+### 2. Start the real-robot exploration stack (three terminals)
+
+Build the workspace once, then source it in each terminal:
+
+```bash
+cd leo_exploration_ws
+colcon build --packages-select leo_exploration
+source install/setup.bash
+```
 
 Make sure the RPLidar is connected to the development machine and accessible:
 
 ```bash
 sudo chmod 666 /dev/ttyUSB0
+```
 
+**Terminal 1 — Lidar + laser TF**
+
+```bash
 cd leo_exploration_ws
-colcon build --packages-select leo_exploration
 source install/setup.bash
-ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184
+ros2 launch leo_exploration step1_lidar.launch.py serial_port:=/dev/ttyUSB0 laser_height:=0.12
 ```
 
-For a suspended or bench test, keep velocity output disconnected from the drivetrain:
+**Terminal 2 — SLAM Toolbox**
 
 ```bash
-ros2 launch leo_exploration exploration_launch.py \
-  pi_ip:=10.172.190.184 \
-  cmd_vel_out_topic:=/cmd_vel_debug
+cd leo_exploration_ws
+source install/setup.bash
+ros2 launch leo_exploration step2_slam.launch.py
 ```
 
-To use a different lidar serial port:
+**Terminal 3 — Nav2 + frontier explorer + RViz**
 
 ```bash
-ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 serial_port:=/dev/ttyUSB1
+cd leo_exploration_ws
+source install/setup.bash
+ros2 launch leo_exploration step3_nav_explorer.launch.py
 ```
-
-Useful real-robot launch options:
-
-```bash
-# Skip RViz on the development machine
-ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 rviz:=false
-
-# Reuse an externally published scan topic instead of launching the local lidar
-ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 launch_lidar:=false scan_topic:=/scan
-
-# Override network detection when needed
-ros2 launch leo_exploration exploration_launch.py \
-  pi_ip:=10.172.190.184 \
-  local_ip:=10.172.190.46 \
-  network_interface:=wlo1
-```
-
-The legacy `step1_lidar.launch.py`, `step2_slam.launch.py`, and `step3_nav_explorer.launch.py`
-files are kept only as diagnostic entry points. The supported end-to-end real-robot path is
-`exploration_launch.py`.
 
 ## System Overview
 
@@ -288,7 +281,7 @@ Examples:
 The default world includes:
 
 * A **12 × 12 m** enclosed indoor environment
-* Multiple static and movable obstacles
+* Multiple static and movable obstacles with wider spacing
 * A Leo Rover spawn point near the center
 * Lighting and physics settings suitable for exploration testing
 
