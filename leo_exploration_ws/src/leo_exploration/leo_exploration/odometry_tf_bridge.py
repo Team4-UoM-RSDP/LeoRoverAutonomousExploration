@@ -19,7 +19,7 @@ class OdometryTfBridge(Node):
         self.declare_parameter("use_local_timestamp", True)
         self.declare_parameter("publish_rate_hz", 20.0)
         self.declare_parameter("publish_initial_transform", True)
-        self.declare_parameter("timestamp_offset_sec", -0.25)
+        self.declare_parameter("timestamp_offset_sec", 0.10)
 
         self.odom_topic = self.get_parameter("odom_topic").value
         self.fallback_parent_frame = (

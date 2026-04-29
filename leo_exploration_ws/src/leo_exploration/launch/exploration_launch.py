@@ -14,6 +14,9 @@ Bring-up order:
 """
 
 import os
+import re
+import subprocess
+from xml.sax.saxutils import escape
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -23,14 +26,99 @@ from launch.actions import (
     GroupAction,
     IncludeLaunchDescription,
     LogInfo,
+    OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
     TimerAction,
+    UnsetEnvironmentVariable,
 )
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetRemap
+
+
+def _route_to_peer(peer_ip):
+    """Return the local interface and IP the OS would use to reach peer_ip."""
+    try:
+        output = subprocess.check_output(
+            ["ip", "-4", "route", "get", peer_ip],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+        )
+    except Exception:
+        return "auto", "auto"
+
+    interface = "auto"
+    local_ip = "auto"
+    dev_match = re.search(r"\bdev\s+(\S+)", output)
+    src_match = re.search(r"\bsrc\s+(\S+)", output)
+    if dev_match:
+        interface = dev_match.group(1)
+    if src_match:
+        local_ip = src_match.group(1)
+    return interface, local_ip
+
+
+def _configure_dds(context):
+    pi_ip = LaunchConfiguration("pi_ip").perform(context)
+    local_ip = LaunchConfiguration("local_ip").perform(context)
+    network_interface = LaunchConfiguration("network_interface").perform(context)
+    ros_domain_id = LaunchConfiguration("ros_domain_id").perform(context)
+
+    route_interface, route_ip = _route_to_peer(pi_ip)
+    if local_ip == "auto":
+        local_ip = route_ip
+    if network_interface == "auto":
+        network_interface = route_interface
+
+    if local_ip == "auto" or network_interface == "auto":
+        raise RuntimeError(
+            "Could not auto-detect local_ip/network_interface. "
+            "Pass local_ip:=<this_machine_ip> network_interface:=<wifi_iface>."
+        )
+
+    cyclonedds_config = f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<CycloneDDS xmlns=\"https://cdds.io/config\">
+  <Domain Id=\"any\">
+    <General>
+      <Interfaces>
+        <NetworkInterface name=\"{escape(network_interface)}\" priority=\"default\" multicast=\"default\" />
+      </Interfaces>
+      <AllowMulticast>true</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer Address=\"{escape(pi_ip)}\" />
+        <Peer Address=\"{escape(local_ip)}\" />
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+"""
+    config_path = f"/tmp/leo_cyclonedds_{ros_domain_id}_{local_ip.replace('.', '_')}_{pi_ip.replace('.', '_')}.xml"
+    with open(config_path, "w", encoding="utf-8") as config_file:
+        config_file.write(cyclonedds_config)
+
+    return [
+        SetEnvironmentVariable("RMW_IMPLEMENTATION", "rmw_cyclonedds_cpp"),
+        SetEnvironmentVariable("ROS_DOMAIN_ID", ros_domain_id),
+        SetEnvironmentVariable("ROS_AUTOMATIC_DISCOVERY_RANGE", "SUBNET"),
+        SetEnvironmentVariable("ROS_IP", local_ip),
+        SetEnvironmentVariable("CYCLONEDDS_URI", "file://" + config_path),
+        UnsetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE"),
+        UnsetEnvironmentVariable("ROS_DISCOVERY_SERVER"),
+        LogInfo(
+            msg=(
+                f"[DDS] CycloneDDS peers: local {local_ip} on {network_interface}, "
+                f"Pi {pi_ip}, domain {ros_domain_id}"
+            )
+        ),
+    ]
 
 
 def generate_launch_description():
@@ -40,6 +128,26 @@ def generate_launch_description():
     nav2_params = os.path.join(pkg_leo, "config", "nav2_params_real.yaml")
     rviz_config = os.path.join(pkg_leo, "config", "rviz2_config.rviz")
 
+    ros_domain_id_arg = DeclareLaunchArgument(
+        "ros_domain_id",
+        default_value="42",
+        description="ROS_DOMAIN_ID shared with the Leo Rover Pi.",
+    )
+    pi_ip_arg = DeclareLaunchArgument(
+        "pi_ip",
+        default_value="192.168.8.2",
+        description="Leo Rover Pi WiFi IP address.",
+    )
+    local_ip_arg = DeclareLaunchArgument(
+        "local_ip",
+        default_value="auto",
+        description="This machine's WiFi IP. Use auto to infer from pi_ip route.",
+    )
+    network_interface_arg = DeclareLaunchArgument(
+        "network_interface",
+        default_value="auto",
+        description="This machine's WiFi interface. Use auto to infer from pi_ip route.",
+    )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
         default_value="false",
@@ -80,6 +188,23 @@ def generate_launch_description():
         default_value="0.12",
         description="Height of the lidar above base_link in metres.",
     )
+    odom_tf_timestamp_offset_arg = DeclareLaunchArgument(
+        "odom_tf_timestamp_offset",
+        default_value="0.10",
+        description=(
+            "Seconds added to locally republished odom TF stamps to absorb "
+            "WiFi clock jitter between the Pi and this machine."
+        ),
+    )
+    cmd_vel_out_arg = DeclareLaunchArgument(
+        "cmd_vel_out_topic",
+        default_value="/cmd_vel_relay",
+        description=(
+            "Final velocity topic after smoothing/collision monitoring. "
+            "The Pi relay forwards /cmd_vel_relay to the firmware /cmd_vel. "
+            "Use /cmd_vel_debug for suspended dry-run tests."
+        ),
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     serial_port = LaunchConfiguration("serial_port")
@@ -89,6 +214,8 @@ def generate_launch_description():
     scan_topic = LaunchConfiguration("scan_topic")
     laser_frame = LaunchConfiguration("laser_frame")
     laser_height = LaunchConfiguration("laser_height")
+    odom_tf_timestamp_offset = LaunchConfiguration("odom_tf_timestamp_offset")
+    cmd_vel_out_topic = LaunchConfiguration("cmd_vel_out_topic")
 
     # VS Code installed as a snap can leak snap runtime variables into ROS launch.
     # RViz then tries to load glibc pieces from /snap/core20 and exits before opening.
@@ -101,6 +228,8 @@ def generate_launch_description():
         "export XDG_DATA_DIRS=\"${XDG_DATA_DIRS_VSCODE_SNAP_ORIG:-"
         "/usr/share/ubuntu:/usr/share/gnome:/usr/local/share:/usr/share:"
         "/var/lib/snapd/desktop}\"; "
+        "export LIBGL_ALWAYS_SOFTWARE=1; "
+        "export QT_OPENGL=software; "
         "exec rviz2 -d ",
         rviz_config,
         " --ros-args -r __node:=rviz2 -r scan:=",
@@ -126,7 +255,7 @@ def generate_launch_description():
             "fallback_parent_frame": "odom",
             "fallback_child_frame": "base_footprint",
             "publish_initial_transform": False,
-            "timestamp_offset_sec": 0.0,
+            "timestamp_offset_sec": odom_tf_timestamp_offset,
         }],
     )
 
@@ -223,7 +352,21 @@ def generate_launch_description():
             launch_arguments={
                 "use_sim_time": use_sim_time,
                 "slam_params_file": slam_params,
+                "autostart": "false",
+                "use_lifecycle_manager": "true",
             }.items(),
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_slam",
+            output="screen",
+            parameters=[{
+                "use_sim_time": use_sim_time,
+                "autostart": True,
+                "bond_timeout": 120.0,
+                "node_names": ["slam_toolbox"],
+            }],
         ),
     ])
 
@@ -237,6 +380,7 @@ def generate_launch_description():
             name="controller_server",
             output="screen",
             parameters=[nav2_params, {"use_sim_time": use_sim_time}],
+            remappings=[("cmd_vel", "cmd_vel_nav")],
         ),
         Node(
             package="nav2_planner",
@@ -251,6 +395,7 @@ def generate_launch_description():
             name="behavior_server",
             output="screen",
             parameters=[nav2_params, {"use_sim_time": use_sim_time}],
+            remappings=[("cmd_vel", "cmd_vel_nav")],
         ),
         Node(
             package="nav2_bt_navigator",
@@ -258,6 +403,27 @@ def generate_launch_description():
             name="bt_navigator",
             output="screen",
             parameters=[nav2_params, {"use_sim_time": use_sim_time}],
+        ),
+        Node(
+            package="nav2_velocity_smoother",
+            executable="velocity_smoother",
+            name="velocity_smoother",
+            output="screen",
+            parameters=[nav2_params, {"use_sim_time": use_sim_time}],
+            remappings=[("cmd_vel", "cmd_vel_nav")],
+        ),
+        Node(
+            package="nav2_collision_monitor",
+            executable="collision_monitor",
+            name="collision_monitor",
+            output="screen",
+            parameters=[
+                nav2_params,
+                {
+                    "use_sim_time": use_sim_time,
+                    "cmd_vel_out_topic": cmd_vel_out_topic,
+                },
+            ],
         ),
     ])
 
@@ -276,6 +442,8 @@ def generate_launch_description():
                     "controller_server",
                     "planner_server",
                     "behavior_server",
+                    "velocity_smoother",
+                    "collision_monitor",
                     "bt_navigator",
                 ],
             }],
@@ -294,6 +462,8 @@ def generate_launch_description():
                 "controller_server",
                 "planner_server",
                 "behavior_server",
+                "velocity_smoother",
+                "collision_monitor",
                 "bt_navigator",
             ],
         }],
@@ -314,11 +484,14 @@ def generate_launch_description():
                     "use_sim_time": use_sim_time,
                     "robot_frame": "base_link",
                     "map_frame": "map",
-                    "cmd_vel_topic": "/cmd_vel",
+                    "cmd_vel_topic": "/cmd_vel_nav",
                     "min_frontier_size": 5,
                     "obstacle_dist": 0.45,
                     "scan_half_angle": 60.0,
                     "safety_radius": 0.35,
+                    "scan_timeout": 0.7,
+                    "front_min_points": 4,
+                    "safety_min_points": 3,
                     "nav_timeout": 35.0,
                     "init_forward_speed": 0.15,
                     "init_forward_duration": 3.0,
@@ -392,6 +565,13 @@ def generate_launch_description():
         scan_topic_arg,
         laser_frame_arg,
         laser_height_arg,
+        odom_tf_timestamp_offset_arg,
+        cmd_vel_out_arg,
+        ros_domain_id_arg,
+        pi_ip_arg,
+        local_ip_arg,
+        network_interface_arg,
+        OpaqueFunction(function=_configure_dds),
         LogInfo(msg="[RealRobot] Split deployment: Pi base stack + local lidar/SLAM/Nav2/RViz"),
         system_monitor_node,
         odometry_tf_bridge_node,

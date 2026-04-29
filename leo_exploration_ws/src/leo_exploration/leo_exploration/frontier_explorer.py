@@ -374,6 +374,7 @@ class FrontierExplorer(Node):
         self.map_data: Optional[OccupancyGrid] = None
         self.costmap_data: Optional[OccupancyGrid] = None
         self.latest_scan: Optional[LaserScan] = None
+        self.latest_scan_time: Optional[float] = None
         self._enabled: bool = True
 
         # Robot pose (map frame)
@@ -409,6 +410,7 @@ class FrontierExplorer(Node):
 
         # Debounce for 360° safety perimeter triggers
         self._safety_hits: int = 0
+        self._last_scan_warn: float = 0.0
 
         # Service readiness flags (updated by 1 Hz probe timer)
         self._svc_local_ok: bool = False
@@ -483,6 +485,9 @@ class FrontierExplorer(Node):
         self.declare_parameter("safety_self_clear_radius", 0.30) # ignore returns inside robot/self envelope
         self.declare_parameter("safety_rear_exclusion_deg", 20.0) # exclude narrow rear wedge
         self.declare_parameter("safety_trigger_count",  2)       # debounce cycles before emergency avoid
+        self.declare_parameter("scan_timeout",         0.7)      # stop if scan stream goes stale
+        self.declare_parameter("front_min_points",      4)       # close points needed in front sector
+        self.declare_parameter("safety_min_points",     3)       # close points needed for perimeter stop
         self.declare_parameter("nav_timeout",          35.0)    # s
         self.declare_parameter("init_forward_speed",   0.15)    # m/s
         self.declare_parameter("init_forward_duration", 3.0)    # s
@@ -512,6 +517,9 @@ class FrontierExplorer(Node):
         self.p_safety_self_clear_radius = g("safety_self_clear_radius").value
         self.p_safety_rear_exclusion = math.radians(g("safety_rear_exclusion_deg").value)
         self.p_safety_trigger_count = int(g("safety_trigger_count").value)
+        self.p_scan_timeout = float(g("scan_timeout").value)
+        self.p_front_min_points = int(g("front_min_points").value)
+        self.p_safety_min_points = int(g("safety_min_points").value)
         self.p_nav_timeout     = g("nav_timeout").value
         self.p_fwd_speed       = g("init_forward_speed").value
         self.p_fwd_duration    = g("init_forward_duration").value
@@ -541,6 +549,7 @@ class FrontierExplorer(Node):
 
     def _scan_cb(self, msg: LaserScan) -> None:
         self.latest_scan = msg
+        self.latest_scan_time = self._now_sec()
 
     def _enable_cb(self, msg: Bool) -> None:
         """Publish std_msgs/Bool False to /explore/enable to pause."""
@@ -589,6 +598,13 @@ class FrontierExplorer(Node):
         except (LookupException, ConnectivityException, ExtrapolationException):
             return None
 
+    def _scan_is_fresh(self, now: Optional[float] = None) -> bool:
+        if self.latest_scan is None or self.latest_scan_time is None:
+            return False
+        if now is None:
+            now = self._now_sec()
+        return (now - self.latest_scan_time) <= self.p_scan_timeout
+
     def _obstacle_in_sector(self) -> Tuple[bool, float]:
         """
         Front-sector obstacle check.
@@ -611,8 +627,10 @@ class FrontierExplorer(Node):
         )
         if not np.any(valid):
             return False, float("inf")
-        min_d = float(np.min(ranges[valid]))
-        return min_d < self.p_obs_dist, min_d
+        sector_ranges = ranges[valid]
+        min_d = float(np.min(sector_ranges))
+        close_count = int(np.sum(sector_ranges < self.p_obs_dist))
+        return close_count >= self.p_front_min_points, min_d
 
     def _check_safety_perimeter(self) -> Tuple[bool, float, float]:
         """
@@ -647,8 +665,9 @@ class FrontierExplorer(Node):
         min_idx = int(np.argmin(valid_ranges))
         min_d = float(valid_ranges[min_idx])
         min_angle = float(valid_angles[min_idx])
+        close_count = int(np.sum(valid_ranges < self.p_safety_radius))
 
-        return min_d < self.p_safety_radius, min_d, min_angle
+        return close_count >= self.p_safety_min_points, min_d, min_angle
 
 
     def _stop(self) -> None:
@@ -956,6 +975,15 @@ class FrontierExplorer(Node):
             return
 
         now = self._now_sec()
+
+        if self.state is not State.COMPLETE and not self._scan_is_fresh(now):
+            self._stop()
+            if now - self._last_scan_warn > 2.0:
+                self.get_logger().warn(
+                    "LaserScan stream is stale or unavailable - holding still"
+                )
+                self._last_scan_warn = now
+            return
 
         # ── Global safety perimeter (runs in EVERY state except AVOIDING
         #    and COMPLETE) ── 360° check with debounce

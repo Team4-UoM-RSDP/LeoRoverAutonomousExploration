@@ -93,20 +93,25 @@ ros2 launch leo_exploration sim_exploration_launch.py spawn_x:=2.0 spawn_y:=1.0
 This repository uses a split deployment for the physical robot:
 
 * The Leo Rover Pi keeps running the LeoOS base stack for drivetrain, IMU, and `odom -> base_footprint -> base_link`.
+* The Pi also runs a lightweight `/cmd_vel_relay -> /cmd_vel` bridge so commands from the development machine reliably reach the firmware.
 * The development machine runs the USB RPLidar, SLAM Toolbox, Nav2, `frontier_explorer`, and RViz.
 
 ### 1. Confirm the Pi base stack is online
 
-On the Pi, the LeoOS user services should be active and must share the same ROS 2 network settings as the development machine.
+On the Pi, the LeoOS user services should be active and must share the same ROS 2 network settings as the development machine. The supported Pi-side setup is:
+
+```bash
+systemctl --user status ros-nodes.service uros-agent.service
+```
 
 On the development machine, verify that you can already see the rover base stack before starting this package:
 
 ```bash
-ros2 node list
-ros2 topic list | grep -E '/tf|/odom|/odometry'
+ros2 topic list | grep -E '/merged_odom|/tf|/cmd_vel_relay'
+ros2 topic hz /merged_odom
 ```
 
-If those commands do not show the Pi-side base nodes and TF topics, fix the Pi ROS service environment first.
+If those commands do not show the Pi-side base nodes and TF topics, fix the Pi ROS service environment first. The Pi should not run its own RPLidar node in this split mode.
 
 ### 2. Start the real-robot exploration stack on the development machine
 
@@ -118,26 +123,37 @@ sudo chmod 666 /dev/ttyUSB0
 cd leo_exploration_ws
 colcon build --packages-select leo_exploration
 source install/setup.bash
-ros2 launch leo_exploration exploration_launch.py
+ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184
+```
+
+For a suspended or bench test, keep velocity output disconnected from the drivetrain:
+
+```bash
+ros2 launch leo_exploration exploration_launch.py \
+  pi_ip:=10.172.190.184 \
+  cmd_vel_out_topic:=/cmd_vel_debug
 ```
 
 To use a different lidar serial port:
 
 ```bash
-ros2 launch leo_exploration exploration_launch.py serial_port:=/dev/ttyUSB1
+ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 serial_port:=/dev/ttyUSB1
 ```
 
 Useful real-robot launch options:
 
 ```bash
 # Skip RViz on the development machine
-ros2 launch leo_exploration exploration_launch.py rviz:=false
+ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 rviz:=false
 
 # Reuse an externally published scan topic instead of launching the local lidar
-ros2 launch leo_exploration exploration_launch.py launch_lidar:=false scan_topic:=/scan
+ros2 launch leo_exploration exploration_launch.py pi_ip:=10.172.190.184 launch_lidar:=false scan_topic:=/scan
 
-# Override the lidar frame name
-ros2 launch leo_exploration exploration_launch.py laser_frame:=laser
+# Override network detection when needed
+ros2 launch leo_exploration exploration_launch.py \
+  pi_ip:=10.172.190.184 \
+  local_ip:=10.172.190.46 \
+  network_interface:=wlo1
 ```
 
 The legacy `step1_lidar.launch.py`, `step2_slam.launch.py`, and `step3_nav_explorer.launch.py`
@@ -160,7 +176,10 @@ The exploration stack combines:
                   │
                   └──> frontier_explorer ──> /navigate_to_pose
                                                │
-                                               └──> Nav2 ──> /cmd_vel
+                                               └──> Nav2 ──> /cmd_vel_nav
+                                                            └──> velocity_smoother
+                                                                 └──> collision_monitor
+                                                                      └──> /cmd_vel_relay -> Pi /cmd_vel
 ```
 
 ## Exploration Logic
