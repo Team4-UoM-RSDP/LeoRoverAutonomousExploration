@@ -55,7 +55,7 @@ cd LeoRoverAutonomousExploration
 
 
 ### 2. Install Dependencies
-
+sudo apt update
 cd leo_exploration_ws/src/leo_exploration/scripts
 chmod +x install_sim_deps.sh
 ./install_sim_deps.sh
@@ -118,6 +118,7 @@ If those commands do not show the Pi-side base nodes and TF topics, fix the Pi R
 Build the workspace once, then source it in each terminal:
 
 ```bash
+sudo apt update
 cd leo_exploration_ws
 colcon build --packages-select leo_exploration
 source install/setup.bash
