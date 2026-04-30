@@ -8,7 +8,7 @@ A frontier-based autonomous exploration system for the [Leo Rover](https://www.l
 
 - **Wavefront Frontier Detection (WFD)** for robust frontier discovery on occupancy grids
 - **No in-place rotation policy** to improve lidar stability on the real robot
-- **180° front-only lidar filtering** to ignore false rear-body reflections
+- **Front-only lidar filtering** (real: 120°, sim: 180°) to ignore false rear-body reflections
 - **Dual-layer safety system** with front obstacle checks and full 360° safety perimeter monitoring
 - **Sim-to-real consistency** using the same `frontier_explorer` node in both modes
 - **Self-contained simulation** with included URDF, Gazebo world, and bridge configuration
@@ -205,12 +205,12 @@ score = 0.45 * info_gain + 0.35 * distance_score + 0.15 * direction_score - visi
 
 ## Safety Design
 
-Two safety mechanisms are used:
+Two safety mechanisms are used (real-robot defaults shown; simulation uses larger thresholds):
 
-| Layer                     | Coverage   | Threshold | Purpose                                  |
-| ------------------------- | ---------- | --------- | ---------------------------------------- |
-| Navigation obstacle check | Front 180° | `0.55 m`  | Obstacle detection for path execution    |
-| Safety perimeter          | Full 360°  | `0.50 m`  | Emergency avoidance in all active states |
+| Layer                     | Coverage    | Real Robot Threshold | Simulation Threshold | Purpose                                  |
+| ------------------------- | ----------- | -------------------- | -------------------- | ---------------------------------------- |
+| Navigation obstacle check | Front 120°  | `0.45 m`             | `0.55 m`             | Obstacle detection for path execution    |
+| Safety perimeter          | Full 360°   | `0.35 m`             | `0.50 m`             | Emergency avoidance in all active states |
 
 ## Runtime Controls
 
@@ -293,7 +293,7 @@ The default world includes:
 | Robot not visible            | Spawn failure                                   | Check terminal output from `spawn_leo`            |
 | Exploration does not begin   | Nav2 or SLAM not ready                          | Wait for staged startup to complete               |
 | TF warnings                  | Missing transform                               | Inspect TF using `ros2 run tf2_tools view_frames` |
-| Lidar detects rear obstacles | Real robot body reflections                     | Keep `scan_half_angle` at `90.0`                  |
+| Lidar detects rear obstacles | Real robot body reflections                     | Keep `scan_half_angle` at `60.0` (real) / `90.0` (sim) |
 | Robot revisits the same area | Low revisit penalty or limited frontier quality | Review scoring and map conditions                 |
 
 ## License
