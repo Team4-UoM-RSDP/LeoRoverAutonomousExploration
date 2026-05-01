@@ -1,6 +1,6 @@
 # ============================================================================
 #  Nav2 Parameters — Leo Rover (RPLidar A2M12)
-#  ROS2 Jazzy  |  Differential Drive  |  445 × 424 mm footprint
+#  ROS2 Jazzy  |  Differential Drive  |  445 x 424 mm footprint
 #
 #  Global planner : NavFn (Dijkstra, allow_unknown=true)
 #  Local planner  : Regulated Pure Pursuit (RPP)
@@ -173,9 +173,11 @@ local_costmap:
       width: 5
       height: 5
       resolution: 0.05
-      # Leo Rover exact bounds: 445 mm long × 424 mm wide → half: 0.2225 × 0.212
+      # Leo Rover exact bounds: 445 mm long x 424 mm wide -> half: 0.2225 x 0.212.
+      # Keep padding small for modelling uncertainty; hard 10 cm clearance is
+      # enforced by collision_monitor below so narrow spaces remain traversable.
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"
-      footprint_padding: 0.05
+      footprint_padding: 0.02
       plugins: ["obstacle_layer", "inflation_layer"]
 
       obstacle_layer:
@@ -197,8 +199,8 @@ local_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45    # robot half-diagonal (~0.31m) + indoor safety margin
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.22    # compact indoor margin; hard stop zone handles 10 cm body clearance
 
       always_send_full_costmap: true
 
@@ -217,7 +219,7 @@ global_costmap:
       resolution: 0.05
       track_unknown_space: true    # ← keep unknown cells as 255 in costmap
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"
-      footprint_padding: 0.05
+      footprint_padding: 0.02
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
       static_layer:
@@ -245,8 +247,8 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.45
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.22
 
       always_send_full_costmap: true
 
@@ -291,19 +293,19 @@ collision_monitor:
     PolygonStop:
       type: "polygon"
       action_type: "stop"
-      # Hard-stop zone: robot footprint + ~10cm margin on all sides
+      # Hard-stop zone: exact body plus 10 cm margin on all sides.
       polygon_pub_topic: "polygon_stop"
-      points: "[ [0.33, 0.32], [0.33, -0.32], [-0.33, -0.32], [-0.33, 0.32] ]"
-      min_points: 3
+      points: "[ [0.323, 0.312], [0.323, -0.312], [-0.323, -0.312], [-0.323, 0.312] ]"
+      min_points: 2
       visualize: true
       enabled: true
     FootprintApproach:
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 1.0
+      time_before_collision: 0.7
       simulation_time_step: 0.02
-      min_points: 6
+      min_points: 4
       visualize: false
       enabled: true
     observation_sources: ["scan"]

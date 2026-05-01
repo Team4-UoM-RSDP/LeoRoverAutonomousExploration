@@ -188,6 +188,21 @@ def generate_launch_description():
         default_value="0.12",
         description="Height of the lidar above base_link in metres.",
     )
+    laser_x_arg = DeclareLaunchArgument(
+        "laser_x",
+        default_value="0.1325",
+        description="Lidar X offset in base_link metres: 0.2225m front half - 0.09m.",
+    )
+    laser_y_arg = DeclareLaunchArgument(
+        "laser_y",
+        default_value="0.0",
+        description="Lidar Y offset in base_link metres. Positive is robot-left.",
+    )
+    laser_yaw_arg = DeclareLaunchArgument(
+        "laser_yaw",
+        default_value="0.541052",
+        description="Lidar yaw in radians. 0.541052 rad is about 31 deg left of robot-forward.",
+    )
     odom_tf_timestamp_offset_arg = DeclareLaunchArgument(
         "odom_tf_timestamp_offset",
         default_value="0.10",
@@ -214,6 +229,9 @@ def generate_launch_description():
     scan_topic = LaunchConfiguration("scan_topic")
     laser_frame = LaunchConfiguration("laser_frame")
     laser_height = LaunchConfiguration("laser_height")
+    laser_x = LaunchConfiguration("laser_x")
+    laser_y = LaunchConfiguration("laser_y")
+    laser_yaw = LaunchConfiguration("laser_yaw")
     odom_tf_timestamp_offset = LaunchConfiguration("odom_tf_timestamp_offset")
     cmd_vel_out_topic = LaunchConfiguration("cmd_vel_out_topic")
 
@@ -286,10 +304,10 @@ def generate_launch_description():
         name="tf_base_laser",
         output="screen",
         arguments=[
-            "--x", "0.0",
-            "--y", "0.0",
+            "--x", laser_x,
+            "--y", laser_y,
             "--z", laser_height,
-            "--yaw", "0.0",
+            "--yaw", laser_yaw,
             "--pitch", "0.0",
             "--roll", "0.0",
             "--frame-id", "base_link",
@@ -486,22 +504,30 @@ def generate_launch_description():
                     "map_frame": "map",
                     "cmd_vel_topic": "/cmd_vel_nav",
                     "min_frontier_size": 5,
-                    "obstacle_dist": 0.45,
-                    "scan_half_angle": 60.0,
-                    "safety_radius": 0.35,
+                    "obstacle_dist": 0.20,
+                    "scan_half_angle": 70.0,
+                    "safety_radius": 0.10,
+                    "body_clearance": 0.10,
+                    "self_filter_padding": 0.02,
+                    "laser_x_offset": laser_x,
+                    "laser_y_offset": laser_y,
+                    "laser_yaw_offset": laser_yaw,
+                    "robot_front": 0.2225,
+                    "robot_rear": -0.2225,
+                    "robot_half_width": 0.212,
                     "scan_timeout": 0.7,
-                    "front_min_points": 4,
-                    "safety_min_points": 3,
+                    "front_min_points": 3,
+                    "safety_min_points": 2,
                     "nav_timeout": 35.0,
                     "init_forward_speed": 0.15,
                     "init_forward_duration": 3.0,
-                    "backup_speed": -0.18,
-                    "backup_duration": 1.8,
-                    "avoid_curve_speed": 0.10,
-                    "avoid_curve_angular": 0.5,
-                    "avoid_curve_duration": 2.0,
-                    "recov_forward_speed": 0.12,
-                    "recov_forward_duration": 4.0,
+                    "backup_speed": -0.14,
+                    "backup_duration": 1.0,
+                    "avoid_curve_speed": 0.08,
+                    "avoid_curve_angular": 0.35,
+                    "avoid_curve_duration": 1.4,
+                    "recov_forward_speed": 0.10,
+                    "recov_forward_duration": 2.5,
                     "max_consec_fail": 4,
                     "costmap_clear_every": 3,
                     "complete_no_frontier": 8,
@@ -565,6 +591,9 @@ def generate_launch_description():
         scan_topic_arg,
         laser_frame_arg,
         laser_height_arg,
+        laser_x_arg,
+        laser_y_arg,
+        laser_yaw_arg,
         odom_tf_timestamp_offset_arg,
         cmd_vel_out_arg,
         ros_domain_id_arg,

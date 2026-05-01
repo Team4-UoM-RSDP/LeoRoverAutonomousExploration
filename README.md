@@ -8,8 +8,8 @@ A frontier-based autonomous exploration system for the [Leo Rover](https://www.l
 
 - **Wavefront Frontier Detection (WFD)** for robust frontier discovery on occupancy grids
 - **No in-place rotation policy** to improve lidar stability on the real robot
-- **Front-only lidar filtering** (real: 120°, sim: 180°) to ignore false rear-body reflections
-- **Dual-layer safety system** with front obstacle checks and full 360° safety perimeter monitoring
+- **Body-aware lidar filtering** with configurable real lidar offset/yaw
+- **Dual-layer safety system** with body-clearance checks and Nav2 collision monitoring
 - **Sim-to-real consistency** using the same `frontier_explorer` node in both modes
 - **Self-contained simulation** with included URDF, Gazebo world, and bridge configuration
 - **Automatic map saving** when exploration is complete
@@ -113,9 +113,9 @@ ros2 topic hz /merged_odom
 
 If those commands do not show the Pi-side base nodes and TF topics, fix the Pi ROS service environment first. The Pi should not run its own RPLidar node in this split mode.
 
-### 2. Start the real-robot exploration stack (three terminals)
+### 2. Start the real-robot exploration stack
 
-Build the workspace once, then source it in each terminal:
+Build the workspace once, then source it:
 
 ```bash
 sudo apt update
@@ -130,29 +130,25 @@ Make sure the RPLidar is connected to the development machine and accessible:
 sudo chmod 666 /dev/ttyUSB0
 ```
 
-**Terminal 1 — Lidar + laser TF**
+The supported real-robot entry point starts the local RPLidar, `base_link -> laser`
+TF, SLAM, Nav2, RViz, and the frontier explorer in the correct order:
 
 ```bash
 cd leo_exploration_ws
 source install/setup.bash
-ros2 launch leo_exploration step1_lidar.launch.py serial_port:=/dev/ttyUSB0 laser_height:=0.12
+ros2 launch leo_exploration exploration_launch.py pi_ip:=192.168.8.2 serial_port:=/dev/ttyUSB0 rviz:=true
 ```
 
-**Terminal 2 — SLAM Toolbox**
+The default real lidar geometry is:
 
-```bash
-cd leo_exploration_ws
-source install/setup.bash
-ros2 launch leo_exploration step2_slam.launch.py
-```
+* `laser_x=0.1325`: lidar is 9 cm behind the front of a 44.5 cm body.
+* `laser_y=0.0`: lidar is on the rover centre line.
+* `laser_yaw=0.541052`: lidar zero-degree ray points about 31 degrees left of robot-forward.
+* `body_clearance=0.10`: explorer/collision monitor target about 10 cm clearance from the physical body.
 
-**Terminal 3 — Nav2 + frontier explorer + RViz**
-
-```bash
-cd leo_exploration_ws
-source install/setup.bash
-ros2 launch leo_exploration step3_nav_explorer.launch.py
-```
+`step1_lidar.launch.py`, `step2_slam.launch.py`, and `step3_nav_explorer.launch.py`
+remain available as diagnostic entries, but they are not the normal real-robot
+startup path.
 
 ## System Overview
 
@@ -210,8 +206,9 @@ Two safety mechanisms are used (real-robot defaults shown; simulation uses large
 
 | Layer                     | Coverage    | Real Robot Threshold | Simulation Threshold | Purpose                                  |
 | ------------------------- | ----------- | -------------------- | -------------------- | ---------------------------------------- |
-| Navigation obstacle check | Front 120°  | `0.45 m`             | `0.55 m`             | Obstacle detection for path execution    |
-| Safety perimeter          | Full 360°   | `0.35 m`             | `0.50 m`             | Emergency avoidance in all active states |
+| Navigation obstacle check | Front corridor in robot frame | `0.20 m` in front of body | `0.55 m` legacy sim setting | Obstacle detection for path execution |
+| Safety perimeter          | Body rectangle + margin | `0.10 m` from body | `0.50 m` legacy sim setting | Emergency avoidance in all active states |
+| Nav2 collision monitor    | Body rectangle + margin | `0.10 m` from body | Configured in sim params | Final hard-stop before `/cmd_vel` output |
 
 ## Runtime Controls
 
@@ -294,7 +291,7 @@ The default world includes:
 | Robot not visible            | Spawn failure                                   | Check terminal output from `spawn_leo`            |
 | Exploration does not begin   | Nav2 or SLAM not ready                          | Wait for staged startup to complete               |
 | TF warnings                  | Missing transform                               | Inspect TF using `ros2 run tf2_tools view_frames` |
-| Lidar detects rear obstacles | Real robot body reflections                     | Keep `scan_half_angle` at `60.0` (real) / `90.0` (sim) |
+| Lidar/map appears rotated or delayed | Wrong `base_link -> laser` extrinsic | Check `laser_x`, `laser_y`, and `laser_yaw`; real default yaw is `0.541052` rad |
 | Robot revisits the same area | Low revisit penalty or limited frontier quality | Review scoring and map conditions                 |
 
 ## License

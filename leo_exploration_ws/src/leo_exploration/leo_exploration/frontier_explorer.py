@@ -1,30 +1,14 @@
 #!/usr/bin/env python3
 """
 Leo Rover Frontier-Based Autonomous Exploration Node
-ROS2 Jazzy  |  v3.1  —  Wavefront Frontier Detection (WFD)
+ROS2 Jazzy  |  v3.2  —  Wavefront Frontier Detection (WFD)
 
-v3.1 changes:
-  ─ 120° front-sector navigation check (scan_half_angle=60° by default).
-  ─ 360° safety perimeter now includes:
-      • self-clear radius filtering
-      • rear exclusion wedge filtering
-      • debounce across multiple control cycles
-  ─ Avoidance completion no longer counts as an automatic navigation failure.
-  ─ Fixed several map-boundary / neighbor edge cases in WFD utilities.
-  ─ Frontier size scoring now uses the real cluster size.
-  ─ WFD BFS algorithm ported from nav2_wavefront_frontier_exploration
-    (replaces numpy dilation-based frontier detection).
-  ─ INIT_SPIN removed: robot drives straight forward on startup (no spin).
-  ─ All spinning/rotation removed:
-      • Avoidance: back-up + gentle curve only (no in-place spin).
-      • Recovery: slow forward drive (no spin).
-  ─ 180° front-only lidar filter (scan_half_angle=90°):
-      Real robot has structural pillars behind the lidar that cause
-      false positive obstacle readings.
-  ─ Anti ghost-wall: on obstacle hit, the robot backs up + curves
-    WITHOUT regenerating a new frontier map in a different direction.
-    Re-scoring penalises recently-visited frontier centroids.
-  ─ Compatible with both simulation and real hardware.
+v3.2 changes:
+  - Converts LaserScan points into the robot base frame before safety checks.
+  - Supports real lidar extrinsics (front-mounted, yaw-offset lidar).
+  - Uses rectangular body-clearance checks instead of a large circular bubble.
+  - Keeps no-spin avoidance: back-up + gentle curve only.
+  - Compatible with both simulation and real hardware through parameters.
 """
 
 import math
@@ -398,6 +382,8 @@ class FrontierExplorer(Node):
         self._avoid_t0: Optional[float] = None
         self._avoid_phase: int = 0  # 0=back-up, 1=curve
         self._avoid_direction: float = 1.0  # +1 = curve left, -1 = curve right
+        self._last_front_obstacle_angle: float = 0.0
+        self._last_front_obstacle_y: float = 0.0
 
         # Recovery bookkeeping
         self._recov_t0: Optional[float] = None
@@ -461,13 +447,21 @@ class FrontierExplorer(Node):
             "\n"
             "╔══════════════════════════════════════════════════╗\n"
             "║  Leo Rover Frontier Explorer  (ROS2 Jazzy)       ║\n"
-            "║  v3.0 — WFD Algorithm — No Rotation Mode         ║\n"
-            "║  180° front-only lidar | Anti ghost-wall          ║\n"
+            "║  v3.2 — WFD + body-aware obstacle avoidance      ║\n"
+            "║  No-spin mode | Real lidar extrinsics supported  ║\n"
             "║  Publish False to /explore/enable to pause.       ║\n"
             "╚══════════════════════════════════════════════════╝"
         )
         self.get_logger().info(
             f"Velocity commands will be published on {self.p_cmd_vel_topic}"
+        )
+        self.get_logger().info(
+            "Safety geometry: "
+            f"laser=({self.p_laser_x_offset:.3f}, {self.p_laser_y_offset:.3f}, "
+            f"yaw={math.degrees(self.p_laser_yaw_offset):.1f} deg), "
+            f"body front/rear/half_width="
+            f"{self.p_robot_front:.3f}/{self.p_robot_rear:.3f}/{self.p_robot_half_width:.3f} m, "
+            f"clearance={self.p_body_clearance:.2f} m"
         )
 
     # -------------------------------------------------------------------------
@@ -479,25 +473,33 @@ class FrontierExplorer(Node):
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
-        self.declare_parameter("obstacle_dist",        0.45)
-        self.declare_parameter("scan_half_angle",      60.0)    # degrees — 120° front scan
-        self.declare_parameter("safety_radius",        0.35)    # 360° safety perimeter trigger
-        self.declare_parameter("safety_self_clear_radius", 0.30) # ignore returns inside robot/self envelope
-        self.declare_parameter("safety_rear_exclusion_deg", 20.0) # exclude narrow rear wedge
+        self.declare_parameter("obstacle_dist",        0.20)    # clearance ahead of body, metres
+        self.declare_parameter("scan_half_angle",      70.0)    # degrees around robot-forward
+        self.declare_parameter("safety_radius",        0.10)    # legacy alias/logging for body clearance
+        self.declare_parameter("body_clearance",       0.10)    # hard safety envelope outside body
+        self.declare_parameter("self_filter_padding",  0.02)    # ignore points inside body + this margin
+        self.declare_parameter("safety_self_clear_radius", 0.0)  # legacy parameter, no longer radial
+        self.declare_parameter("safety_rear_exclusion_deg", 0.0) # optional rear blind wedge
         self.declare_parameter("safety_trigger_count",  2)       # debounce cycles before emergency avoid
         self.declare_parameter("scan_timeout",         0.7)      # stop if scan stream goes stale
-        self.declare_parameter("front_min_points",      4)       # close points needed in front sector
-        self.declare_parameter("safety_min_points",     3)       # close points needed for perimeter stop
+        self.declare_parameter("front_min_points",      3)       # close points needed in front corridor
+        self.declare_parameter("safety_min_points",     2)       # close points needed for perimeter stop
+        self.declare_parameter("laser_x_offset",       0.0)      # scan origin in base_link
+        self.declare_parameter("laser_y_offset",       0.0)
+        self.declare_parameter("laser_yaw_offset",     0.0)      # radians; + means laser zero points left
+        self.declare_parameter("robot_front",          0.2225)   # Leo 445 mm long
+        self.declare_parameter("robot_rear",          -0.2225)
+        self.declare_parameter("robot_half_width",     0.212)    # Leo 424 mm wide
         self.declare_parameter("nav_timeout",          35.0)    # s
         self.declare_parameter("init_forward_speed",   0.15)    # m/s
         self.declare_parameter("init_forward_duration", 3.0)    # s
-        self.declare_parameter("backup_speed",        -0.18)    # m/s
-        self.declare_parameter("backup_duration",      1.8)     # s
-        self.declare_parameter("avoid_curve_speed",    0.10)    # m/s linear during curve
-        self.declare_parameter("avoid_curve_angular",  0.5)     # rad/s during curve
-        self.declare_parameter("avoid_curve_duration",  2.0)    # s
-        self.declare_parameter("recov_forward_speed",  0.12)    # m/s
-        self.declare_parameter("recov_forward_duration", 4.0)   # s
+        self.declare_parameter("backup_speed",        -0.14)    # m/s
+        self.declare_parameter("backup_duration",      1.0)     # s
+        self.declare_parameter("avoid_curve_speed",    0.08)    # m/s linear during curve
+        self.declare_parameter("avoid_curve_angular",  0.35)    # rad/s during curve
+        self.declare_parameter("avoid_curve_duration",  1.4)    # s
+        self.declare_parameter("recov_forward_speed",  0.10)    # m/s
+        self.declare_parameter("recov_forward_duration", 2.5)   # s
         self.declare_parameter("max_consec_fail",      4)
         self.declare_parameter("costmap_clear_every",  3)
         self.declare_parameter("complete_no_frontier", 8)
@@ -514,12 +516,23 @@ class FrontierExplorer(Node):
         self.p_obs_dist        = g("obstacle_dist").value
         self.p_scan_half_angle = math.radians(g("scan_half_angle").value)
         self.p_safety_radius   = g("safety_radius").value
+        self.p_body_clearance  = max(
+            float(g("body_clearance").value),
+            float(self.p_safety_radius),
+        )
+        self.p_self_filter_padding = float(g("self_filter_padding").value)
         self.p_safety_self_clear_radius = g("safety_self_clear_radius").value
         self.p_safety_rear_exclusion = math.radians(g("safety_rear_exclusion_deg").value)
         self.p_safety_trigger_count = int(g("safety_trigger_count").value)
         self.p_scan_timeout = float(g("scan_timeout").value)
         self.p_front_min_points = int(g("front_min_points").value)
         self.p_safety_min_points = int(g("safety_min_points").value)
+        self.p_laser_x_offset = float(g("laser_x_offset").value)
+        self.p_laser_y_offset = float(g("laser_y_offset").value)
+        self.p_laser_yaw_offset = float(g("laser_yaw_offset").value)
+        self.p_robot_front = float(g("robot_front").value)
+        self.p_robot_rear = float(g("robot_rear").value)
+        self.p_robot_half_width = float(g("robot_half_width").value)
         self.p_nav_timeout     = g("nav_timeout").value
         self.p_fwd_speed       = g("init_forward_speed").value
         self.p_fwd_duration    = g("init_forward_duration").value
@@ -605,69 +618,113 @@ class FrontierExplorer(Node):
             now = self._now_sec()
         return (now - self.latest_scan_time) <= self.p_scan_timeout
 
-    def _obstacle_in_sector(self) -> Tuple[bool, float]:
-        """
-        Front-sector obstacle check.
-        Only considers laser readings within ±scan_half_angle (default ±60° = 120° total).
-        This filters out rear readings caused by structural pillars on the
-        real Leo Rover chassis.
-        """
+    def _scan_points_robot_frame(self):
+        """Return valid LaserScan points transformed into base_link coordinates."""
         scan = self.latest_scan
         if scan is None:
-            return False, float("inf")
+            return None
+
         ranges = np.array(scan.ranges, dtype=np.float32)
-        angles = (
+        laser_angles = (
             np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
             + scan.angle_min
         )
-        valid = (
-            np.isfinite(ranges)
-            & (ranges > 0.01)
-            & (np.abs(angles) <= self.p_scan_half_angle)
-        )
+
+        min_range = max(float(scan.range_min), 0.02)
+        valid = np.isfinite(ranges) & (ranges >= min_range)
+        if scan.range_max > 0.0:
+            valid &= (ranges <= float(scan.range_max))
+
         if not np.any(valid):
+            return None
+
+        valid_ranges = ranges[valid]
+        base_angles = laser_angles[valid] + self.p_laser_yaw_offset
+        base_angles = np.arctan2(np.sin(base_angles), np.cos(base_angles))
+        xs = self.p_laser_x_offset + valid_ranges * np.cos(base_angles)
+        ys = self.p_laser_y_offset + valid_ranges * np.sin(base_angles)
+        return xs, ys, valid_ranges, base_angles
+
+    def _inside_body_rect(self, xs, ys, clearance: float):
+        return (
+            (xs <= self.p_robot_front + clearance)
+            & (xs >= self.p_robot_rear - clearance)
+            & (np.abs(ys) <= self.p_robot_half_width + clearance)
+        )
+
+    def _clearance_to_body(self, xs, ys):
+        dx_front = xs - self.p_robot_front
+        dx_rear = self.p_robot_rear - xs
+        dx = np.maximum(np.maximum(dx_front, dx_rear), 0.0)
+        dy = np.maximum(np.abs(ys) - self.p_robot_half_width, 0.0)
+        return np.hypot(dx, dy)
+
+    def _obstacle_in_sector(self) -> Tuple[bool, float]:
+        """
+        Body-aware front obstacle check.
+
+        obstacle_dist is clearance ahead of the physical front bumper, not raw
+        lidar range. Points are first transformed from the laser frame into
+        base_link using the configured lidar offset/yaw.
+        """
+        points = self._scan_points_robot_frame()
+        self._last_front_obstacle_angle = 0.0
+        self._last_front_obstacle_y = 0.0
+        if points is None:
             return False, float("inf")
-        sector_ranges = ranges[valid]
-        min_d = float(np.min(sector_ranges))
-        close_count = int(np.sum(sector_ranges < self.p_obs_dist))
-        return close_count >= self.p_front_min_points, min_d
+
+        xs, ys, _ranges, base_angles = points
+        self_mask = self._inside_body_rect(xs, ys, self.p_self_filter_padding)
+        corridor_half_width = self.p_robot_half_width + self.p_body_clearance
+        front_mask = (
+            (xs > self.p_robot_front)
+            & (np.abs(ys) <= corridor_half_width)
+            & (np.abs(base_angles) <= self.p_scan_half_angle)
+            & (~self_mask)
+        )
+
+        if not np.any(front_mask):
+            return False, float("inf")
+
+        front_clearances = xs[front_mask] - self.p_robot_front
+        front_angles = base_angles[front_mask]
+        front_ys = ys[front_mask]
+        min_idx = int(np.argmin(front_clearances))
+        min_clearance = float(front_clearances[min_idx])
+        self._last_front_obstacle_angle = float(front_angles[min_idx])
+        self._last_front_obstacle_y = float(front_ys[min_idx])
+        close_count = int(np.sum(front_clearances < self.p_obs_dist))
+        return close_count >= self.p_front_min_points, min_clearance
 
     def _check_safety_perimeter(self) -> Tuple[bool, float, float]:
         """
-        360° safety perimeter check with self-filtering and a narrow rear exclusion wedge.
+        Rectangular safety perimeter check around the real robot body.
 
-        Returns (is_danger, min_distance, danger_angle_rad).
+        Returns (is_danger, min_clearance_from_body, danger_angle_rad).
         """
-        scan = self.latest_scan
-        if scan is None:
+        points = self._scan_points_robot_frame()
+        if points is None:
             return False, float("inf"), 0.0
 
-        ranges = np.array(scan.ranges, dtype=np.float32)
-        angles = (
-            np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
-            + scan.angle_min
-        )
+        xs, ys, _ranges, base_angles = points
+        safety_mask = self._inside_body_rect(xs, ys, self.p_body_clearance)
+        self_mask = self._inside_body_rect(xs, ys, self.p_self_filter_padding)
+        valid = safety_mask & (~self_mask)
 
-        valid = np.isfinite(ranges) & (ranges > 0.01)
-
-        # Ignore returns inside the robot / lidar mount / near-self envelope
-        valid &= (ranges > self.p_safety_self_clear_radius)
-
-        # Exclude a narrow wedge directly behind the robot to avoid rear self-reflections
-        rear_mask = np.abs(np.abs(angles) - math.pi) < self.p_safety_rear_exclusion
-        valid &= (~rear_mask)
+        if self.p_safety_rear_exclusion > 0.0:
+            rear_mask = np.abs(np.abs(base_angles) - math.pi) < self.p_safety_rear_exclusion
+            valid &= (~rear_mask)
 
         if not np.any(valid):
             return False, float("inf"), 0.0
 
-        valid_ranges = ranges[valid]
-        valid_angles = angles[valid]
-        min_idx = int(np.argmin(valid_ranges))
-        min_d = float(valid_ranges[min_idx])
-        min_angle = float(valid_angles[min_idx])
-        close_count = int(np.sum(valid_ranges < self.p_safety_radius))
-
-        return close_count >= self.p_safety_min_points, min_d, min_angle
+        clearances = self._clearance_to_body(xs[valid], ys[valid])
+        danger_angles = base_angles[valid]
+        min_idx = int(np.argmin(clearances))
+        min_clearance = float(clearances[min_idx])
+        min_angle = float(danger_angles[min_idx])
+        close_count = int(np.sum(clearances <= self.p_body_clearance))
+        return close_count >= self.p_safety_min_points, min_clearance, min_angle
 
 
     def _stop(self) -> None:
@@ -996,8 +1053,8 @@ class FrontierExplorer(Node):
 
             if self._safety_hits >= self.p_safety_trigger_count:
                 self.get_logger().warn(
-                    f"⚠ Safety perimeter breach! Obstacle at {s_dist:.2f}m "
-                    f"angle={math.degrees(s_angle):.0f}° — emergency avoidance"
+                    f"Safety perimeter breach! Body clearance {s_dist:.2f}m "
+                    f"at angle={math.degrees(s_angle):.0f} deg - emergency avoidance"
                 )
                 self._stop()
                 # Cancel any active Nav2 goal
@@ -1043,7 +1100,7 @@ class FrontierExplorer(Node):
         obs, dist = self._obstacle_in_sector()
         if obs:
             self.get_logger().warn(
-                f"Obstacle at {dist:.2f}m during init drive — starting exploration"
+                f"Obstacle clearance {dist:.2f}m during init drive - starting exploration"
             )
             self._stop()
             self._fwd_t0 = None
@@ -1138,32 +1195,16 @@ class FrontierExplorer(Node):
     # -------------------------------------------------------------------------
 
     def _state_navigating(self, now: float) -> None:
-        # Emergency obstacle avoidance (threshold = 85% of configured distance)
+        # Emergency obstacle avoidance: body-aware front clearance check.
         obs, dist = self._obstacle_in_sector()
-        if obs and dist < self.p_obs_dist * 0.85:
+        if obs:
             self.get_logger().warn(
-                f"Obstacle at {dist:.2f} m — emergency avoidance (no spin)"
+                f"Front body clearance {dist:.2f} m - emergency avoidance (no spin)"
             )
             self._cancel_nav()
             self._avoid_t0 = now
             self._avoid_phase = 0
-            # Determine avoidance direction from front-sector scan
-            scan = self.latest_scan
-            if scan is not None:
-                ranges = np.array(scan.ranges, dtype=np.float32)
-                angles = (
-                    np.arange(len(ranges), dtype=np.float32) * scan.angle_increment
-                    + scan.angle_min
-                )
-                valid = np.isfinite(ranges) & (ranges > 0.01) & (np.abs(angles) <= self.p_scan_half_angle)
-                if np.any(valid):
-                    idx = int(np.argmin(ranges[valid]))
-                    obs_angle = float(angles[valid][idx])
-                    self._avoid_direction = -1.0 if obs_angle > 0.0 else 1.0
-                else:
-                    self._avoid_direction = 1.0
-            else:
-                self._avoid_direction = 1.0
+            self._avoid_direction = -1.0 if self._last_front_obstacle_y > 0.0 else 1.0
             self.state = State.AVOIDING
             return
 
@@ -1248,7 +1289,7 @@ class FrontierExplorer(Node):
         obs, dist = self._obstacle_in_sector()
         if obs:
             self.get_logger().warn(
-                f"Obstacle at {dist:.2f}m during recovery — switching to avoidance"
+                f"Front body clearance {dist:.2f}m during recovery - switching to avoidance"
             )
             self._stop()
             self._recov_t0 = None
