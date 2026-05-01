@@ -393,6 +393,7 @@ class FrontierExplorer(Node):
 
         # Ensure COMPLETE executes exactly once
         self._completed: bool = False
+        self._map_saved: bool = False
 
         # Debounce for 360° safety perimeter triggers
         self._safety_hits: int = 0
@@ -952,8 +953,9 @@ class FrontierExplorer(Node):
     # -------------------------------------------------------------------------
 
     def _save_map(self) -> None:
-        if not self.p_save_map:
+        if not self.p_save_map or self._map_saved:
             return
+        self._map_saved = True
         path = self.p_map_path
         self.get_logger().info(f"Saving map to {path}.[yaml|pgm] ...")
         try:
@@ -1346,6 +1348,7 @@ def main(args=None) -> None:
         try:
             if rclpy.ok():
                 node._stop()
+                node._save_map()
         except Exception:
             pass
         node.destroy_node()

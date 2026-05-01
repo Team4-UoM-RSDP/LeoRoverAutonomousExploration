@@ -12,7 +12,7 @@ A frontier-based autonomous exploration system for the [Leo Rover](https://www.l
 - **Dual-layer safety system** with body-clearance checks and Nav2 collision monitoring
 - **Sim-to-real consistency** using the same `frontier_explorer` node in both modes
 - **Self-contained simulation** with included URDF, Gazebo world, and bridge configuration
-- **Automatic map saving** when exploration is complete
+- **Automatic map saving** when exploration completes or the node exits
 - **Anti-revisit scoring** to reduce repeated visits to the same regions
 
 ## Requirements
