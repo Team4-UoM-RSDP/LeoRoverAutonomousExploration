@@ -127,6 +127,10 @@ def generate_launch_description():
     slam_params = os.path.join(pkg_leo, "config", "slam_toolbox_real.yaml")
     nav2_params = os.path.join(pkg_leo, "config", "nav2_params_real.yaml")
     rviz_config = os.path.join(pkg_leo, "config", "rviz2_config.rviz")
+    nav_to_pose_bt = os.path.join(
+        pkg_leo, "behavior_trees", "navigate_to_pose_no_spin.xml")
+    nav_through_poses_bt = os.path.join(
+        pkg_leo, "behavior_trees", "navigate_through_poses_no_spin.xml")
 
     ros_domain_id_arg = DeclareLaunchArgument(
         "ros_domain_id",
@@ -403,7 +407,14 @@ def generate_launch_description():
             executable="bt_navigator",
             name="bt_navigator",
             output="screen",
-            parameters=[nav2_params, {"use_sim_time": use_sim_time}],
+            parameters=[
+                nav2_params,
+                {
+                    "use_sim_time": use_sim_time,
+                    "default_nav_to_pose_bt_xml": nav_to_pose_bt,
+                    "default_nav_through_poses_bt_xml": nav_through_poses_bt,
+                },
+            ],
         ),
         Node(
             package="nav2_velocity_smoother",
@@ -486,6 +497,12 @@ def generate_launch_description():
                     "robot_frame": "base_link",
                     "map_frame": "map",
                     "cmd_vel_topic": "/cmd_vel_nav",
+                    "command_topic": "/explore/command",
+                    "manual_override_enable_topic": "/manual_override/enable",
+                    "manual_override_cmd_vel_topic": "/manual_override/cmd_vel",
+                    "record_start_pose": True,
+                    "start_pose_topic": "/explore/start_pose",
+                    "start_pose_map_topic": "/explore/start_pose_map",
                     "min_frontier_size": 5,
                     "obstacle_dist": 0.12,
                     "scan_half_angle": 70.0,

@@ -31,10 +31,10 @@ from rclpy.qos import (
 )
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from nav2_msgs.action import NavigateToPose
@@ -360,9 +360,15 @@ class FrontierExplorer(Node):
         self.latest_scan: Optional[LaserScan] = None
         self.latest_scan_time: Optional[float] = None
         self._enabled: bool = True
+        self._manual_override: bool = False
+        self._last_manual_cmd_time: Optional[float] = None
 
         # Robot pose (map frame)
         self.rx = self.ry = self.ryaw = 0.0
+        self._start_pose_map: Optional[Tuple[float, float, float]] = None
+        self._start_transform_msg: Optional[TransformStamped] = None
+        self._start_pose_msg: Optional[PoseStamped] = None
+        self._start_pose_map_msg: Optional[PoseStamped] = None
 
         # Init-forward timing
         self._fwd_t0: Optional[float] = None
@@ -399,6 +405,7 @@ class FrontierExplorer(Node):
         # Debounce for 360° safety perimeter triggers
         self._safety_hits: int = 0
         self._last_scan_warn: float = 0.0
+        self._last_start_pose_warn: float = 0.0
 
         # Service readiness flags (updated by 1 Hz probe timer)
         self._svc_local_ok: bool = False
@@ -424,10 +431,27 @@ class FrontierExplorer(Node):
             LaserScan, "/scan", self._scan_cb, qos_profile_sensor_data)
         self.create_subscription(
             Bool, "/explore/enable", self._enable_cb, 10)
+        # Requirement: Manual override shall be available via a dedicated
+        # channel. When enabled, autonomy is suspended and only manual velocity
+        # commands from this channel are forwarded to the rover.
+        self.create_subscription(
+            Bool, self.p_manual_override_enable_topic,
+            self._manual_override_cb, 10)
+        self.create_subscription(
+            Twist, self.p_manual_override_cmd_vel_topic,
+            self._manual_cmd_vel_cb, 10)
+        # Requirement: The robot shall accept Start and Stop commands. This
+        # command channel accepts std_msgs/String values: "start" and "stop".
+        self.create_subscription(
+            String, self.p_command_topic, self._command_cb, 10)
 
         # Publishers
         self._cmd_vel_pub = self.create_publisher(Twist, self.p_cmd_vel_topic, 10)
         self._viz_pub = self.create_publisher(MarkerArray, "/frontiers", 10)
+        self._start_pose_pub = self.create_publisher(
+            PoseStamped, self.p_start_pose_topic, tl_qos)
+        self._start_pose_map_pub = self.create_publisher(
+            PoseStamped, self.p_start_pose_map_topic, tl_qos)
 
         # Nav2 action client
         self._nav_ac = ActionClient(self, NavigateToPose, "navigate_to_pose")
@@ -444,6 +468,7 @@ class FrontierExplorer(Node):
         self._ctrl_timer = self.create_timer(0.2, self._ctrl_loop)
         self._prog_timer = self.create_timer(self.p_log_interval, self._log_progress)
         self._svc_timer = self.create_timer(1.0, self._probe_services)
+        self._start_pose_timer = self.create_timer(1.0, self._publish_start_pose)
 
         self.get_logger().info(
             "\n"
@@ -457,6 +482,17 @@ class FrontierExplorer(Node):
         self.get_logger().info(
             f"Velocity commands will be published on {self.p_cmd_vel_topic}"
         )
+        self.get_logger().info(
+            "Control channels: "
+            f"start/stop={self.p_command_topic}, "
+            f"manual_override={self.p_manual_override_enable_topic}, "
+            f"manual_cmd_vel={self.p_manual_override_cmd_vel_topic}"
+        )
+        if self.p_record_start_pose:
+            self.get_logger().info(
+                "Start pose recording enabled; waiting for first valid "
+                f"{self.p_map_frame}->{self.p_robot_frame} transform."
+            )
         self.get_logger().info(
             "Safety geometry: "
             f"laser=({self.p_laser_x_offset:.3f}, {self.p_laser_y_offset:.3f}, "
@@ -473,6 +509,13 @@ class FrontierExplorer(Node):
 
     def _declare_params(self) -> None:
         self.declare_parameter("cmd_vel_topic",       "/cmd_vel")
+        self.declare_parameter("command_topic",       "/explore/command")
+        self.declare_parameter("manual_override_enable_topic", "/manual_override/enable")
+        self.declare_parameter("manual_override_cmd_vel_topic", "/manual_override/cmd_vel")
+        self.declare_parameter("manual_cmd_timeout",  0.5)
+        self.declare_parameter("record_start_pose",   True)
+        self.declare_parameter("start_pose_topic",    "/explore/start_pose")
+        self.declare_parameter("start_pose_map_topic", "/explore/start_pose_map")
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
@@ -514,6 +557,19 @@ class FrontierExplorer(Node):
     def _load_params(self) -> None:
         g = self.get_parameter
         self.p_cmd_vel_topic  = g("cmd_vel_topic").value
+        self.p_command_topic = str(g("command_topic").value or "/explore/command")
+        self.p_manual_override_enable_topic = str(
+            g("manual_override_enable_topic").value or "/manual_override/enable"
+        )
+        self.p_manual_override_cmd_vel_topic = str(
+            g("manual_override_cmd_vel_topic").value or "/manual_override/cmd_vel"
+        )
+        self.p_manual_cmd_timeout = float(g("manual_cmd_timeout").value)
+        self.p_record_start_pose = bool(g("record_start_pose").value)
+        self.p_start_pose_topic = str(g("start_pose_topic").value or "/explore/start_pose")
+        self.p_start_pose_map_topic = str(
+            g("start_pose_map_topic").value or "/explore/start_pose_map"
+        )
         self.p_robot_frame     = str(g("robot_frame").value or "base_link")
         self.p_map_frame       = str(g("map_frame").value or "map")
         self.p_min_frontier    = g("min_frontier_size").value
@@ -584,6 +640,72 @@ class FrontierExplorer(Node):
             if self._goal_handle is not None:
                 self._cancel_nav()
 
+    def _manual_override_cb(self, msg: Bool) -> None:
+        """
+        Dedicated manual override channel.
+
+        True suspends autonomous exploration and allows /manual_override/cmd_vel
+        to drive the rover. False releases manual control back to autonomy.
+        """
+        was = self._manual_override
+        self._manual_override = bool(msg.data)
+        self._last_manual_cmd_time = None
+        if self._manual_override:
+            self.get_logger().warn(
+                f"MANUAL OVERRIDE enabled via {self.p_manual_override_enable_topic}"
+            )
+            self._stop()
+            if self._goal_handle is not None:
+                self._cancel_nav()
+        elif was:
+            self.get_logger().info(
+                f"MANUAL OVERRIDE released via {self.p_manual_override_enable_topic}"
+            )
+            self._stop()
+
+    def _manual_cmd_vel_cb(self, msg: Twist) -> None:
+        """
+        Forward manual velocity commands only while manual override is active.
+
+        Manual commands use their own topic so operator control is clearly
+        separated from autonomous Nav2/frontier velocity commands.
+        """
+        if not self._manual_override:
+            return
+        self._last_manual_cmd_time = self._now_sec()
+        self._cmd_vel_pub.publish(msg)
+
+    def _command_cb(self, msg: String) -> None:
+        """
+        Start/Stop command channel for the robot.
+
+        Accepted commands:
+          - "start": resume autonomous exploration
+          - "stop": stop the rover and suspend autonomous exploration
+        """
+        command = msg.data.strip().lower()
+        if command == "start":
+            self._manual_override = False
+            self._last_manual_cmd_time = None
+            self._enabled = True
+            self.get_logger().info(f"START command accepted via {self.p_command_topic}")
+            return
+
+        if command == "stop":
+            self._enabled = False
+            self._manual_override = False
+            self._last_manual_cmd_time = None
+            self.get_logger().warn(f"STOP command accepted via {self.p_command_topic}")
+            self._stop()
+            if self._goal_handle is not None:
+                self._cancel_nav()
+            return
+
+        self.get_logger().warn(
+            f"Unknown command on {self.p_command_topic}: {msg.data!r}. "
+            "Use 'start' or 'stop'."
+        )
+
     # -------------------------------------------------------------------------
     #  Timing helper  (ROS clock — works with use_sim_time:=true)
     # -------------------------------------------------------------------------
@@ -603,21 +725,104 @@ class FrontierExplorer(Node):
     #  Utility helpers
     # -------------------------------------------------------------------------
 
-    def _robot_in_map(self) -> Optional[Tuple[float, float, float]]:
+    def _lookup_robot_transform(self) -> Optional[TransformStamped]:
         try:
-            t = self.tf_buf.lookup_transform(
+            return self.tf_buf.lookup_transform(
                 self.p_map_frame, self.p_robot_frame, rclpy.time.Time()
             )
-            tx = t.transform.translation.x
-            ty = t.transform.translation.y
-            q = t.transform.rotation
-            yaw = math.atan2(
-                2.0 * (q.w * q.z + q.x * q.y),
-                1.0 - 2.0 * (q.y * q.y + q.z * q.z),
-            )
-            return tx, ty, yaw
         except (LookupException, ConnectivityException, ExtrapolationException):
             return None
+
+    def _pose_from_transform(self, transform: TransformStamped) -> Tuple[float, float, float]:
+        tx = transform.transform.translation.x
+        ty = transform.transform.translation.y
+        q = transform.transform.rotation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        return tx, ty, yaw
+
+    def _robot_in_map(self) -> Optional[Tuple[float, float, float]]:
+        transform = self._lookup_robot_transform()
+        if transform is None:
+            return None
+        return self._pose_from_transform(transform)
+
+    def _pose_stamped(self, x: float, y: float, yaw: float, frame_id: str) -> PoseStamped:
+        msg = PoseStamped()
+        msg.header.frame_id = frame_id
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x = x
+        msg.pose.position.y = y
+        msg.pose.position.z = 0.0
+        half_yaw = 0.5 * yaw
+        msg.pose.orientation.z = math.sin(half_yaw)
+        msg.pose.orientation.w = math.cos(half_yaw)
+        return msg
+
+    def _pose_stamped_from_transform(self, transform: TransformStamped) -> PoseStamped:
+        msg = PoseStamped()
+        msg.header.frame_id = transform.header.frame_id or self.p_map_frame
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.position.x = transform.transform.translation.x
+        msg.pose.position.y = transform.transform.translation.y
+        msg.pose.position.z = transform.transform.translation.z
+        msg.pose.orientation.x = transform.transform.rotation.x
+        msg.pose.orientation.y = transform.transform.rotation.y
+        msg.pose.orientation.z = transform.transform.rotation.z
+        msg.pose.orientation.w = transform.transform.rotation.w
+        return msg
+
+    def _publish_start_pose(self) -> None:
+        if self._start_pose_msg is not None:
+            self._start_pose_msg.header.stamp = self.get_clock().now().to_msg()
+            self._start_pose_pub.publish(self._start_pose_msg)
+        if self._start_pose_map_msg is not None:
+            self._start_pose_map_msg.header.stamp = self.get_clock().now().to_msg()
+            self._start_pose_map_pub.publish(self._start_pose_map_msg)
+
+    def _record_start_pose_if_needed(
+        self, transform: Optional[TransformStamped] = None
+    ) -> bool:
+        if not self.p_record_start_pose or self._start_pose_map is not None:
+            return True
+
+        if transform is None:
+            transform = self._lookup_robot_transform()
+        if transform is None:
+            return False
+
+        pose = self._pose_from_transform(transform)
+        sx, sy, syaw = pose
+        raw_t = transform.transform.translation
+        raw_q = transform.transform.rotation
+        self._start_transform_msg = transform
+        self._start_pose_map = pose
+        self._start_pose_msg = self._pose_stamped(0.0, 0.0, 0.0, "explore_start")
+        self._start_pose_map_msg = self._pose_stamped_from_transform(transform)
+        self._publish_start_pose()
+
+        self.get_logger().info(f"Starting Pose: {transform}")
+        self.get_logger().info(
+            "Original starting coordinates "
+            f"({transform.header.frame_id}->{transform.child_frame_id}): "
+            f"x={raw_t.x:.3f}, y={raw_t.y:.3f}, z={raw_t.z:.3f}, "
+            f"qx={raw_q.x:.4f}, qy={raw_q.y:.4f}, "
+            f"qz={raw_q.z:.4f}, qw={raw_q.w:.4f}"
+        )
+        self.get_logger().info(
+            "Starting position recorded: x=0.00, y=0.00 "
+            "(run-relative origin). "
+            f"Map-frame start: x={sx:.2f}, y={sy:.2f}, "
+            f"yaw={math.degrees(syaw):.1f} deg. "
+            f"Recall with: ros2 topic echo {self.p_start_pose_topic} --once"
+        )
+        self.get_logger().info(
+            "Map-frame start pose for Nav2/home use is also available on "
+            f"{self.p_start_pose_map_topic}"
+        )
+        return True
 
     def _scan_is_fresh(self, now: Optional[float] = None) -> bool:
         if self.latest_scan is None or self.latest_scan_time is None:
@@ -1065,10 +1270,18 @@ class FrontierExplorer(Node):
     # -------------------------------------------------------------------------
 
     def _ctrl_loop(self) -> None:
-        if not self._enabled:
+        now = self._now_sec()
+
+        if self._manual_override:
+            if (
+                self._last_manual_cmd_time is None
+                or (now - self._last_manual_cmd_time) > self.p_manual_cmd_timeout
+            ):
+                self._stop()
             return
 
-        now = self._now_sec()
+        if not self._enabled:
+            return
 
         if self.state is not State.COMPLETE and not self._scan_is_fresh(now):
             self._stop()
@@ -1077,6 +1290,14 @@ class FrontierExplorer(Node):
                     "LaserScan stream is stale or unavailable - holding still"
                 )
                 self._last_scan_warn = now
+            return
+
+        if self.state is not State.COMPLETE and not self._record_start_pose_if_needed():
+            if now - self._last_start_pose_warn > 2.0:
+                self.get_logger().warn(
+                    f"Waiting to record start pose ({self.p_map_frame}->{self.p_robot_frame})"
+                )
+                self._last_start_pose_warn = now
             return
 
         # ── Global safety perimeter (runs in EVERY state except AVOIDING
@@ -1094,6 +1315,8 @@ class FrontierExplorer(Node):
                     f"at angle={math.degrees(s_angle):.0f} deg "
                     f"({s_count} scan points) - emergency avoidance"
                 )
+                # Emergency stop: command zero velocity before cancelling Nav2
+                # and handing control to the local avoidance state.
                 self._stop()
                 # Cancel any active Nav2 goal
                 if self.state == State.NAVIGATING and self._goal_handle is not None:
@@ -1159,10 +1382,12 @@ class FrontierExplorer(Node):
         if self.consec_fail > 0 and self.consec_fail % self.p_clear_every == 0:
             self._clear_costmaps()
 
-        pose = self._robot_in_map()
-        if pose is None:
+        transform = self._lookup_robot_transform()
+        if transform is None:
             self.get_logger().warn("TF not ready (map->base_link)")
             return
+        self._record_start_pose_if_needed(transform)
+        pose = self._pose_from_transform(transform)
         rx, ry, ryaw = pose
         self.rx, self.ry, self.ryaw = rx, ry, ryaw
 
@@ -1196,6 +1421,16 @@ class FrontierExplorer(Node):
             self.get_logger().warn(
                 "All frontiers too close — driving forward to explore"
             )
+            obs, dist = self._obstacle_in_sector()
+            if obs:
+                self.get_logger().warn(
+                    f"Front body clearance {dist:.2f}m while probing for frontiers "
+                    "- switching to avoidance"
+                )
+                self._stop()
+                self._fwd_t0 = None
+                self._start_avoidance(now, self._last_front_obstacle_angle, mode="front")
+                return
             if self._fwd_t0 is None:
                 self._fwd_t0 = self._now_sec()
             elapsed = self._now_sec() - self._fwd_t0
@@ -1230,6 +1465,8 @@ class FrontierExplorer(Node):
             self.get_logger().warn(
                 f"Front body clearance {dist:.2f} m - emergency avoidance (no spin)"
             )
+            # Emergency stop path: cancel the active Nav2 goal immediately so
+            # the rover stops following the path and switches to obstacle escape.
             self._cancel_nav()
             obstacle_angle = self._last_front_obstacle_angle
             self._start_avoidance(now, obstacle_angle, mode="front")
@@ -1400,6 +1637,8 @@ class FrontierExplorer(Node):
 
         self._stop()
         _, _, _, pct = self._map_stats()
+        if self.p_record_start_pose:
+            self._publish_start_pose()
         self.get_logger().info(
             f"\n=== EXPLORATION COMPLETE ===\n"
             f"  Explored area  : {pct:.1f}%\n"

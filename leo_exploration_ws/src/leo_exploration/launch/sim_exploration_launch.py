@@ -67,6 +67,10 @@ def generate_launch_description():
     rviz_config  = os.path.join(pkg, "config", "rviz2_config.rviz")
     bridge_cfg   = os.path.join(pkg, "config", "ros_gz_bridge.yaml")
     ekf_params   = os.path.join(pkg, "config", "ekf_sim.yaml")
+    nav_to_pose_bt = os.path.join(
+        pkg, "behavior_trees", "navigate_to_pose_no_spin.xml")
+    nav_through_poses_bt = os.path.join(
+        pkg, "behavior_trees", "navigate_through_poses_no_spin.xml")
 
     with open(urdf_file, "r") as f:
         robot_description = f.read()
@@ -263,7 +267,7 @@ def generate_launch_description():
                 parameters=[nav2_params, {"use_sim_time": True}],
             ),
 
-            # ── Behavior Server (recovery behaviors: spin, backup, wait) ──
+            # ── Behavior Server (recovery behaviors: backup, wait) ──
             Node(
                 package="nav2_behaviors",
                 executable="behavior_server",
@@ -291,7 +295,14 @@ def generate_launch_description():
                 executable="bt_navigator",
                 name="bt_navigator",
                 output="screen",
-                parameters=[nav2_params, {"use_sim_time": True}],
+                parameters=[
+                    nav2_params,
+                    {
+                        "use_sim_time": True,
+                        "default_nav_to_pose_bt_xml": nav_to_pose_bt,
+                        "default_nav_through_poses_bt_xml": nav_through_poses_bt,
+                    },
+                ],
             ),
 
             # ── Lifecycle Manager (transitions all nodes to ACTIVE) ──
@@ -333,10 +344,21 @@ def generate_launch_description():
                     "robot_frame":           "base_link",
                     "map_frame":             "map",
                     "cmd_vel_topic":         "/cmd_vel_nav",
+                    "command_topic":         "/explore/command",
+                    "manual_override_enable_topic": "/manual_override/enable",
+                    "manual_override_cmd_vel_topic": "/manual_override/cmd_vel",
+                    "record_start_pose":     True,
+                    "start_pose_topic":      "/explore/start_pose",
+                    "start_pose_map_topic":  "/explore/start_pose_map",
                     "min_frontier_size":     5,
-                    "obstacle_dist":         0.55,
-                    "scan_half_angle":       90.0,       # 180° front-only lidar
-                    "safety_radius":         0.50,       # full 360° safety perimeter
+                    "obstacle_dist":         0.12,
+                    "scan_half_angle":       70.0,
+                    "safety_radius":         0.10,
+                    "body_clearance":        0.10,
+                    "hard_safety_clearance": 0.06,
+                    "self_filter_padding":   0.02,
+                    "front_min_points":      3,
+                    "safety_min_points":     2,
                     "nav_timeout":           45.0,
                     "init_forward_speed":    0.15,       # no spin, drive forward
                     "init_forward_duration": 3.0,

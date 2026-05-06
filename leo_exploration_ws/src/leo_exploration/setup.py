@@ -16,6 +16,8 @@ setup(
          glob("launch/*.py")),
         (os.path.join("share", package_name, "config"),
          glob("config/*")),
+        (os.path.join("share", package_name, "behavior_trees"),
+         glob("behavior_trees/*.xml")),
         (os.path.join("share", package_name, "worlds"),
          glob("worlds/*.world") + glob("worlds/*.sdf")),
         (os.path.join("share", package_name, "urdf"),
