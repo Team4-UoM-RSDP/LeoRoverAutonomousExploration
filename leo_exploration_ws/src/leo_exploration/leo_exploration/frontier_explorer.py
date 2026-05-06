@@ -55,6 +55,10 @@ MIN_FRONTIER_SIZE = 5       # minimum cluster size to consider as a frontier
 # Costmap threshold: cells with cost >= this are in inflation / lethal zone
 COSTMAP_LETHAL_THRESH = 70  # range 0-100 (nav2 scale)
 
+# Wide WFD clusters can wrap around the robot; scoring their geometric centroid
+# makes the target appear too close. Split them into angular slices instead.
+FRONTIER_SECTOR_WIDTH = math.radians(30.0)
+
 
 # =============================================================================
 #  WFD data structures (ported from nav2_wavefront_frontier_exploration)
@@ -154,6 +158,31 @@ def _centroid(arr: list) -> Tuple[float, float]:
     """Compute the centroid of a list of (x, y) tuples."""
     a = np.array(arr)
     return float(np.mean(a[:, 0])), float(np.mean(a[:, 1]))
+
+
+def _frontier_representatives(
+    coords: List[Tuple[float, float]],
+    pose_x: float,
+    pose_y: float,
+) -> List[Tuple[float, float, int]]:
+    """
+    Return one representative per angular sector of a frontier cluster.
+
+    A single connected frontier often forms an arc or ring around the robot in
+    simulation. The geometric centroid of that shape can sit near the robot
+    rather than on the boundary, so each sector gets its own boundary centroid.
+    """
+    sectors: dict[int, List[Tuple[float, float]]] = {}
+    for wx, wy in coords:
+        angle = math.atan2(wy - pose_y, wx - pose_x)
+        sector = int(math.floor((angle + math.pi) / FRONTIER_SECTOR_WIDTH))
+        sectors.setdefault(sector, []).append((wx, wy))
+
+    reps: List[Tuple[float, float, int]] = []
+    for sector_coords in sectors.values():
+        cx, cy = _centroid(sector_coords)
+        reps.append((cx, cy, len(sector_coords)))
+    return reps
 
 
 def _getNeighbors(
@@ -287,8 +316,13 @@ def _getFrontier(
                 newFrontierCoords.append(costmap.mapToWorld(fp.mapX, fp.mapY))
 
             if len(newFrontier) > 0:
-                cx, cy = _centroid(newFrontierCoords)
-                frontiers.append((cx, cy, len(newFrontier)))
+                frontiers.extend(
+                    _frontier_representatives(
+                        newFrontierCoords,
+                        pose_x,
+                        pose_y,
+                    )
+                )
 
         for v in _getNeighbors(p, costmap, fCache):
             if v.classification & (
@@ -328,13 +362,16 @@ class State(Enum):
 # =============================================================================
 
 class Frontier:
-    __slots__ = ("cx", "cy", "size", "score")
+    __slots__ = ("cx", "cy", "size", "score", "goal_x", "goal_y", "goal_is_probe")
 
     def __init__(self, cx: float, cy: float, size: int = 1) -> None:
         self.cx = cx
         self.cy = cy
         self.size = size
         self.score = 0.0
+        self.goal_x = cx
+        self.goal_y = cy
+        self.goal_is_probe = False
 
 
 # =============================================================================
@@ -378,6 +415,7 @@ class FrontierExplorer(Node):
         self._nav_t0: Optional[float] = None
         self._nav_done: bool = False
         self._nav_ok: bool = False
+        self._active_frontier: Optional[Tuple[float, float]] = None
 
         # Counters
         self.consec_fail: int = 0
@@ -398,6 +436,7 @@ class FrontierExplorer(Node):
 
         # Visited frontier history (bounded deque)
         self._visited: Deque[Tuple[float, float]] = deque(maxlen=24)
+        self._blocked_frontiers: Deque[Tuple[float, float]] = deque(maxlen=32)
 
         # Ensure COMPLETE executes exactly once
         self._completed: bool = False
@@ -406,6 +445,7 @@ class FrontierExplorer(Node):
         self._safety_hits: int = 0
         self._last_scan_warn: float = 0.0
         self._last_start_pose_warn: float = 0.0
+        self._last_nav_ready_warn: float = 0.0
 
         # Service readiness flags (updated by 1 Hz probe timer)
         self._svc_local_ok: bool = False
@@ -519,6 +559,11 @@ class FrontierExplorer(Node):
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
+        self.declare_parameter("frontier_ignore_distance", 0.02)
+        self.declare_parameter("frontier_goal_min_distance", 0.60)
+        self.declare_parameter("frontier_goal_search_radius", 1.20)
+        self.declare_parameter("frontier_goal_max_cost", 20)
+        self.declare_parameter("frontier_block_radius", 0.75)
         self.declare_parameter("obstacle_dist",        0.12)    # clearance ahead of body, metres
         self.declare_parameter("scan_half_angle",      70.0)    # degrees around robot-forward
         self.declare_parameter("safety_radius",        0.10)    # legacy alias/logging for body clearance
@@ -550,6 +595,8 @@ class FrontierExplorer(Node):
         self.declare_parameter("max_consec_fail",      4)
         self.declare_parameter("costmap_clear_every",  3)
         self.declare_parameter("complete_no_frontier", 8)
+        self.declare_parameter("complete_no_safe_frontier", 4)
+        self.declare_parameter("complete_min_explored_pct", 97.0)
         self.declare_parameter("log_interval",        12.0)     # s
         self.declare_parameter("save_map_on_complete", True)
         self.declare_parameter("map_save_path",       "/tmp/leo_explored_map")
@@ -573,6 +620,22 @@ class FrontierExplorer(Node):
         self.p_robot_frame     = str(g("robot_frame").value or "base_link")
         self.p_map_frame       = str(g("map_frame").value or "map")
         self.p_min_frontier    = g("min_frontier_size").value
+        self.p_frontier_ignore_dist = max(
+            0.0, float(g("frontier_ignore_distance").value)
+        )
+        self.p_frontier_goal_min_dist = max(
+            self.p_frontier_ignore_dist,
+            float(g("frontier_goal_min_distance").value),
+        )
+        self.p_frontier_goal_search_radius = max(
+            self.p_frontier_goal_min_dist,
+            float(g("frontier_goal_search_radius").value),
+        )
+        self.p_frontier_goal_max_cost = int(g("frontier_goal_max_cost").value)
+        self.p_frontier_block_radius = max(
+            0.1,
+            float(g("frontier_block_radius").value),
+        )
         self.p_obs_dist        = g("obstacle_dist").value
         self.p_scan_half_angle = math.radians(g("scan_half_angle").value)
         self.p_safety_radius   = g("safety_radius").value
@@ -610,6 +673,11 @@ class FrontierExplorer(Node):
         self.p_max_consec      = g("max_consec_fail").value
         self.p_clear_every     = g("costmap_clear_every").value
         self.p_no_front_done   = g("complete_no_frontier").value
+        self.p_no_safe_done    = g("complete_no_safe_frontier").value
+        self.p_complete_min_explored_pct = max(
+            0.0,
+            min(100.0, float(g("complete_min_explored_pct").value)),
+        )
         self.p_log_interval    = g("log_interval").value
         self.p_save_map        = g("save_map_on_complete").value
         self.p_map_path        = g("map_save_path").value
@@ -995,6 +1063,12 @@ class FrontierExplorer(Node):
     def _explored_pct(self) -> float:
         return self._map_stats()[3]
 
+    def _coverage_is_complete(self) -> bool:
+        return (
+            self.p_complete_min_explored_pct > 0.0
+            and self._explored_pct() >= self.p_complete_min_explored_pct
+        )
+
     # -------------------------------------------------------------------------
     #  Frontier detection — WFD algorithm
     # -------------------------------------------------------------------------
@@ -1041,24 +1115,184 @@ class FrontierExplorer(Node):
         Return True if the world point falls inside an inflation or lethal
         zone according to the Nav2 global costmap.
         """
-        cm = self.costmap_data
-        if cm is None:
+        cost = self._grid_cost_at(self.costmap_data, wx, wy)
+        if cost is None:
             return False
+        return 0 <= cost < 255 and cost >= COSTMAP_LETHAL_THRESH
 
-        res = cm.info.resolution
-        ox = cm.info.origin.position.x
-        oy = cm.info.origin.position.y
-        w = cm.info.width
-        h = cm.info.height
+    def _grid_cost_at(
+        self,
+        grid: Optional[OccupancyGrid],
+        wx: float,
+        wy: float,
+    ) -> Optional[int]:
+        """Return a grid cell value for a world point, or None if unavailable."""
+        cell = self._world_to_grid(grid, wx, wy)
+        if cell is None:
+            return None
+        col, row = cell
+        return int(grid.data[row * grid.info.width + col])
 
+    def _world_to_grid(
+        self,
+        grid: Optional[OccupancyGrid],
+        wx: float,
+        wy: float,
+    ) -> Optional[Tuple[int, int]]:
+        """Convert a world point to grid col/row, or None when out of bounds."""
+        if grid is None:
+            return None
+        res = grid.info.resolution
+        if res <= 0.0:
+            return None
+        ox = grid.info.origin.position.x
+        oy = grid.info.origin.position.y
         col = int((wx - ox) / res)
         row = int((wy - oy) / res)
+        if not (0 <= col < grid.info.width and 0 <= row < grid.info.height):
+            return None
+        return col, row
 
-        if not (0 <= col < w and 0 <= row < h):
+    def _grid_to_world(
+        self,
+        grid: OccupancyGrid,
+        col: int,
+        row: int,
+    ) -> Tuple[float, float]:
+        """Convert grid col/row to the center of the corresponding world cell."""
+        res = grid.info.resolution
+        wx = grid.info.origin.position.x + (col + 0.5) * res
+        wy = grid.info.origin.position.y + (row + 0.5) * res
+        return wx, wy
+
+    def _goal_cell_is_usable(
+        self,
+        wx: float,
+        wy: float,
+        allow_unknown: bool = False,
+    ) -> bool:
+        """
+        Accept goals inside known free SLAM space, while rejecting occupied,
+        unknown, and inflated Nav2 costmap cells.
+        """
+        map_cost = self._grid_cost_at(self.map_data, wx, wy)
+        if map_cost is None:
+            return False
+        if allow_unknown:
+            if map_cost > OCC_THRESHOLD:
+                return False
+        elif map_cost != OccupancyGrid2d.CostValues.FreeSpace.value:
             return False
 
-        cost = cm.data[row * w + col]
-        return 0 <= cost < 255 and cost >= COSTMAP_LETHAL_THRESH
+        costmap_cost = self._grid_cost_at(self.costmap_data, wx, wy)
+        if costmap_cost is not None and costmap_cost < 0:
+            return False
+        if (
+            costmap_cost is not None
+            and 0 <= costmap_cost < 255
+            and costmap_cost > self.p_frontier_goal_max_cost
+        ):
+            return False
+
+        return True
+
+    def _frontier_is_blocked(self, frontier: Frontier) -> bool:
+        for bx, by in self._blocked_frontiers:
+            if math.hypot(frontier.cx - bx, frontier.cy - by) < self.p_frontier_block_radius:
+                return True
+        return False
+
+    def _find_safe_frontier_goal(
+        self,
+        frontier: Frontier,
+        rx: float,
+        ry: float,
+        ryaw: float,
+    ) -> Optional[Tuple[float, float, bool]]:
+        """
+        Find a known-free, low-cost standoff goal near a frontier.
+
+        The frontier itself is usually an unknown cell. For obstacle-side final
+        frontiers, the safe action is to inspect from nearby free space, not to
+        command Nav2 into the side of the box.
+        """
+        grid = self.map_data
+        if grid is None:
+            return None
+
+        center = self._world_to_grid(grid, frontier.cx, frontier.cy)
+        if center is None:
+            return None
+
+        res = grid.info.resolution
+        radius_cells = max(1, int(self.p_frontier_goal_search_radius / res))
+        cx, cy = center
+
+        best: Optional[Tuple[float, float, float]] = None
+        frontier_angle = math.atan2(frontier.cy - ry, frontier.cx - rx)
+
+        for row in range(max(0, cy - radius_cells), min(grid.info.height, cy + radius_cells + 1)):
+            for col in range(max(0, cx - radius_cells), min(grid.info.width, cx + radius_cells + 1)):
+                idx = row * grid.info.width + col
+                if grid.data[idx] != OccupancyGrid2d.CostValues.FreeSpace.value:
+                    continue
+
+                wx, wy = self._grid_to_world(grid, col, row)
+                frontier_dist = math.hypot(wx - frontier.cx, wy - frontier.cy)
+                if frontier_dist > self.p_frontier_goal_search_radius:
+                    continue
+
+                robot_dist = math.hypot(wx - rx, wy - ry)
+                if robot_dist < self.p_frontier_ignore_dist:
+                    continue
+                if not self._goal_cell_is_usable(wx, wy):
+                    continue
+
+                angle_to_goal = math.atan2(wy - ry, wx - rx)
+                angle_diff = abs(math.atan2(
+                    math.sin(angle_to_goal - frontier_angle),
+                    math.cos(angle_to_goal - frontier_angle),
+                ))
+                min_dist_pen = max(0.0, self.p_frontier_goal_min_dist - robot_dist)
+                score = frontier_dist + 0.4 * min_dist_pen + 0.1 * angle_diff
+
+                if best is None or score < best[0]:
+                    best = (score, wx, wy)
+
+        if best is None:
+            return None
+
+        _score, gx, gy = best
+        is_probe = math.hypot(gx - frontier.cx, gy - frontier.cy) > (2.0 * res)
+        return gx, gy, is_probe
+
+    def _assign_frontier_goal(
+        self,
+        frontier: Frontier,
+        rx: float,
+        ry: float,
+        ryaw: float,
+    ) -> bool:
+        """
+        Convert a frontier centroid into a Nav2 goal.
+
+        Goals are placed on nearby known-free, low-cost cells. This preserves
+        the robot's safety distance from boxes while still exposing the unknown
+        frontier to the lidar.
+        """
+        frontier.goal_x = frontier.cx
+        frontier.goal_y = frontier.cy
+        frontier.goal_is_probe = False
+
+        if self._frontier_is_blocked(frontier):
+            return False
+
+        candidate = self._find_safe_frontier_goal(frontier, rx, ry, ryaw)
+        if candidate is None:
+            return False
+
+        frontier.goal_x, frontier.goal_y, frontier.goal_is_probe = candidate
+        return True
 
     # -------------------------------------------------------------------------
     #  Frontier scoring
@@ -1075,7 +1309,8 @@ class FrontierExplorer(Node):
               + 0.15 * dir_score
               - visit_penalty
 
-        Frontiers closer than 0.5 m are filtered out.
+        Close frontiers are projected into short planned probe goals instead
+        of being discarded.
         Direction score prefers frontiers AHEAD of robot heading (no rotation).
         """
         if len(self._visited) > 50:
@@ -1085,10 +1320,9 @@ class FrontierExplorer(Node):
 
         result: List[Frontier] = []
         for f in frontiers:
-            dist = math.hypot(f.cx - rx, f.cy - ry)
-
-            if dist < 0.5:
+            if not self._assign_frontier_goal(f, rx, ry, ryaw):
                 continue
+            dist = math.hypot(f.goal_x - rx, f.goal_y - ry)
 
             # Information gain
             info_score = min(1.0, f.size / 60.0)
@@ -1101,7 +1335,7 @@ class FrontierExplorer(Node):
 
             # Direction: STRONGLY prefer frontiers ahead of robot heading
             # (since we never rotate, forward-facing targets are best)
-            angle_to = math.atan2(f.cy - ry, f.cx - rx)
+            angle_to = math.atan2(f.goal_y - ry, f.goal_x - rx)
             angle_diff = abs(math.atan2(
                 math.sin(angle_to - ryaw),
                 math.cos(angle_to - ryaw),
@@ -1115,11 +1349,13 @@ class FrontierExplorer(Node):
                     visit_pen = 0.40
                     break
 
+            probe_pen = 0.05 if f.goal_is_probe else 0.0
             f.score = (
                 0.45 * info_score
                 + 0.35 * dist_score
                 + 0.15 * dir_score
                 - visit_pen
+                - probe_pen
             )
             result.append(f)
 
@@ -1155,6 +1391,9 @@ class FrontierExplorer(Node):
         gh = future.result()
         if not gh.accepted:
             self.get_logger().warn("Goal rejected by Nav2")
+            if self._active_frontier is not None:
+                self._blocked_frontiers.append(self._active_frontier)
+                self._active_frontier = None
             self._nav_done = True
             self._nav_ok = False
             return
@@ -1167,14 +1406,22 @@ class FrontierExplorer(Node):
         self._nav_done = True
         self._goal_handle = None
         if self._nav_ok:
+            if self._active_frontier is not None:
+                self._visited.append(self._active_frontier)
             self.get_logger().info("Navigation succeeded")
         else:
+            if self._active_frontier is not None:
+                self._blocked_frontiers.append(self._active_frontier)
             self.get_logger().warn(f"Navigation failed (status={status})")
+        self._active_frontier = None
 
-    def _cancel_nav(self) -> None:
+    def _cancel_nav(self, mark_blocked: bool = False) -> None:
+        if mark_blocked and self._active_frontier is not None:
+            self._blocked_frontiers.append(self._active_frontier)
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
             self._goal_handle = None
+        self._active_frontier = None
         self._nav_done = True
 
     def _clear_costmaps(self) -> None:
@@ -1395,17 +1642,23 @@ class FrontierExplorer(Node):
 
         if not raw_frontiers:
             self.recov_spins += 1
+            pct = self._explored_pct()
             self.get_logger().warn(
                 f"No frontiers found (streak={self.recov_spins})"
             )
-            if self.recov_spins >= self.p_no_front_done:
-                self.get_logger().info("No frontiers left — exploration complete!")
+            if self._coverage_is_complete():
+                self.get_logger().info(
+                    f"No frontiers left and explored area is {pct:.1f}% "
+                    f"(threshold={self.p_complete_min_explored_pct:.1f}%) - "
+                    "exploration complete!"
+                )
+                self.state = State.COMPLETE
+            elif self.recov_spins >= self.p_no_front_done:
+                self.get_logger().info("No frontiers left - exploration complete!")
                 self.state = State.COMPLETE
             else:
                 self.state = State.RECOVERING
             return
-
-        self.recov_spins = 0
 
         if self.consec_fail >= self.p_max_consec:
             self.get_logger().warn("Too many consecutive failures — recovery drive")
@@ -1416,40 +1669,51 @@ class FrontierExplorer(Node):
         scored = self._score_frontiers(raw_frontiers, rx, ry, ryaw)
         self._publish_frontiers(scored[:20])
 
-        # All frontiers too close (filtered out)
+        # Frontiers were found, but none produced a safe usable goal.
         if not scored:
+            self.recov_spins += 1
+            pct = self._explored_pct()
             self.get_logger().warn(
-                "All frontiers too close — driving forward to explore"
+                f"Frontiers found, but no safe goal is usable "
+                f"(streak={self.recov_spins})"
             )
-            obs, dist = self._obstacle_in_sector()
-            if obs:
-                self.get_logger().warn(
-                    f"Front body clearance {dist:.2f}m while probing for frontiers "
-                    "- switching to avoidance"
+            if self._coverage_is_complete():
+                self.get_logger().info(
+                    "Only unsafe or blocked frontiers remain and explored area "
+                    f"is {pct:.1f}% "
+                    f"(threshold={self.p_complete_min_explored_pct:.1f}%) - "
+                    "exploration complete!"
                 )
-                self._stop()
-                self._fwd_t0 = None
-                self._start_avoidance(now, self._last_front_obstacle_angle, mode="front")
-                return
-            if self._fwd_t0 is None:
-                self._fwd_t0 = self._now_sec()
-            elapsed = self._now_sec() - self._fwd_t0
-            if elapsed < 3.0:
-                self._drive(0.15)
-                return
+                self.state = State.COMPLETE
+            elif self.recov_spins >= self.p_no_safe_done:
+                self.get_logger().info(
+                    "Only unsafe or blocked frontiers remain - exploration complete!"
+                )
+                self.state = State.COMPLETE
             else:
-                self._stop()
-                self._fwd_t0 = None
-                return
+                self.state = State.RECOVERING
+            return
 
+        self.recov_spins = 0
         best = scored[0]
+        goal_note = ""
+        if best.goal_is_probe:
+            goal_note = (
+                f"  probe_goal=({best.goal_x:.2f}, {best.goal_y:.2f})"
+            )
         self.get_logger().info(
             f"Best frontier: ({best.cx:.2f}, {best.cy:.2f})  "
-            f"size={best.size}  score={best.score:.3f}"
+            f"size={best.size}  score={best.score:.3f}{goal_note}"
         )
-        self._visited.append((best.cx, best.cy))
 
-        if self._send_goal(best.cx, best.cy):
+        if not self._nav_ac.server_is_ready():
+            if now - self._last_nav_ready_warn > 2.0:
+                self.get_logger().warn("Nav2 action server not ready - waiting")
+                self._last_nav_ready_warn = now
+            return
+
+        if self._send_goal(best.goal_x, best.goal_y):
+            self._active_frontier = (best.cx, best.cy)
             self.state = State.NAVIGATING
         else:
             self.consec_fail += 1
@@ -1489,7 +1753,7 @@ class FrontierExplorer(Node):
             and (now - self._nav_t0) > self.p_nav_timeout
         ):
             self.get_logger().warn("Navigation timeout — cancelling goal")
-            self._cancel_nav()
+            self._cancel_nav(mark_blocked=True)
             self.consec_fail += 1
             self.total_fail += 1
             self._nav_done = False

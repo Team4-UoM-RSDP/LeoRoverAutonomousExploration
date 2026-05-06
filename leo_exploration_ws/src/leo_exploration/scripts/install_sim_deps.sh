@@ -27,10 +27,21 @@ sudo apt-get install -y \
   ros-jazzy-rosidl-typesupport-fastrtps-cpp \
   ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
+  ros-jazzy-navigation2 \
   ros-jazzy-nav2-bringup \
+  ros-jazzy-nav2-behavior-tree \
+  ros-jazzy-nav2-bt-navigator \
+  ros-jazzy-nav2-core \
   ros-jazzy-nav2-collision-monitor \
+  ros-jazzy-nav2-controller \
+  ros-jazzy-nav2-planner \
+  ros-jazzy-nav2-behaviors \
+  ros-jazzy-nav2-lifecycle-manager \
   ros-jazzy-nav2-msgs \
   ros-jazzy-nav2-map-server \
+  ros-jazzy-nav2-navfn-planner \
+  ros-jazzy-nav2-regulated-pure-pursuit-controller \
+  ros-jazzy-nav2-util \
   ros-jazzy-tf2-ros \
   ros-jazzy-tf2-geometry-msgs \
   ros-jazzy-robot-state-publisher \
@@ -72,11 +83,28 @@ check_pkg() {
   python3 -c "import $1; print('  \033[0;32mOK\033[0m   python3-$1', $1.__version__)" \
     2>/dev/null || echo -e "  ${RED}MISS${NC} python3-$1"
 }
+check_nav2_versions() {
+  local versions
+  versions="$(dpkg-query -W -f='${Version}\n' \
+    ros-jazzy-nav2-bt-navigator \
+    ros-jazzy-nav2-behavior-tree \
+    ros-jazzy-nav2-core \
+    ros-jazzy-nav2-controller \
+    ros-jazzy-nav2-planner \
+    2>/dev/null | cut -d- -f1 | sort -u)"
+  if [[ "$(echo "$versions" | sed '/^$/d' | wc -l)" -eq 1 ]]; then
+    echo -e "  ${GREEN}OK${NC}   Nav2 package version ${versions}"
+  else
+    echo -e "  ${YELLOW}WARN${NC} Nav2 package versions differ: ${versions//$'\n'/, }"
+    echo "       Run this script again after apt update, or upgrade ros-jazzy-nav2-* together."
+  fi
+}
 
 check_cmd gz
 check_cmd ros2
 check_cmd colcon
 check_pkg numpy
+check_nav2_versions
 
 echo ""
 echo "================================================================"
