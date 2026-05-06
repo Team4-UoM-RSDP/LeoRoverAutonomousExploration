@@ -19,8 +19,16 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 info "=== Step 1: Core ROS2 packages ==="
 sudo apt-get update -qq
 sudo apt-get install -y \
+  ros-jazzy-fastcdr \
+  ros-jazzy-fastrtps \
+  ros-jazzy-rmw-fastrtps-cpp \
+  ros-jazzy-rmw-fastrtps-shared-cpp \
+  ros-jazzy-rosidl-typesupport-fastrtps-c \
+  ros-jazzy-rosidl-typesupport-fastrtps-cpp \
+  ros-jazzy-behaviortree-cpp \
   ros-jazzy-slam-toolbox \
   ros-jazzy-nav2-bringup \
+  ros-jazzy-nav2-collision-monitor \
   ros-jazzy-nav2-msgs \
   ros-jazzy-nav2-map-server \
   ros-jazzy-tf2-ros \

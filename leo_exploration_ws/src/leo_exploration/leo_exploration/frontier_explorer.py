@@ -381,9 +381,11 @@ class FrontierExplorer(Node):
         # Avoidance bookkeeping
         self._avoid_t0: Optional[float] = None
         self._avoid_phase: int = 0  # 0=back-up, 1=curve
+        self._avoid_mode: str = "front"  # front backs up; side/rear escape forward
         self._avoid_direction: float = 1.0  # +1 = curve left, -1 = curve right
         self._last_front_obstacle_angle: float = 0.0
         self._last_front_obstacle_y: float = 0.0
+        self._last_avoid_blocked_warn: float = 0.0
 
         # Recovery bookkeeping
         self._recov_t0: Optional[float] = None
@@ -461,7 +463,8 @@ class FrontierExplorer(Node):
             f"yaw={math.degrees(self.p_laser_yaw_offset):.1f} deg), "
             f"body front/rear/half_width="
             f"{self.p_robot_front:.3f}/{self.p_robot_rear:.3f}/{self.p_robot_half_width:.3f} m, "
-            f"clearance={self.p_body_clearance:.2f} m"
+            f"target_clearance={self.p_body_clearance:.2f} m, "
+            f"hard_stop={self.p_hard_safety_clearance:.2f} m"
         )
 
     # -------------------------------------------------------------------------
@@ -473,15 +476,16 @@ class FrontierExplorer(Node):
         self.declare_parameter("robot_frame",          "base_link")
         self.declare_parameter("map_frame",            "map")
         self.declare_parameter("min_frontier_size",    5)
-        self.declare_parameter("obstacle_dist",        0.20)    # clearance ahead of body, metres
+        self.declare_parameter("obstacle_dist",        0.12)    # clearance ahead of body, metres
         self.declare_parameter("scan_half_angle",      70.0)    # degrees around robot-forward
         self.declare_parameter("safety_radius",        0.10)    # legacy alias/logging for body clearance
         self.declare_parameter("body_clearance",       0.10)    # hard safety envelope outside body
+        self.declare_parameter("hard_safety_clearance", 0.06)    # emergency stop envelope outside body
         self.declare_parameter("self_filter_padding",  0.02)    # ignore points inside body + this margin
         self.declare_parameter("safety_self_clear_radius", 0.0)  # legacy parameter, no longer radial
         self.declare_parameter("safety_rear_exclusion_deg", 0.0) # optional rear blind wedge
         self.declare_parameter("safety_trigger_count",  2)       # debounce cycles before emergency avoid
-        self.declare_parameter("scan_timeout",         0.7)      # stop if scan stream goes stale
+        self.declare_parameter("scan_timeout",         1.5)      # stop if scan stream goes stale
         self.declare_parameter("front_min_points",      3)       # close points needed in front corridor
         self.declare_parameter("safety_min_points",     2)       # close points needed for perimeter stop
         self.declare_parameter("laser_x_offset",       0.0)      # scan origin in base_link
@@ -510,8 +514,8 @@ class FrontierExplorer(Node):
     def _load_params(self) -> None:
         g = self.get_parameter
         self.p_cmd_vel_topic  = g("cmd_vel_topic").value
-        self.p_robot_frame     = g("robot_frame").value
-        self.p_map_frame       = g("map_frame").value
+        self.p_robot_frame     = str(g("robot_frame").value or "base_link")
+        self.p_map_frame       = str(g("map_frame").value or "map")
         self.p_min_frontier    = g("min_frontier_size").value
         self.p_obs_dist        = g("obstacle_dist").value
         self.p_scan_half_angle = math.radians(g("scan_half_angle").value)
@@ -519,6 +523,10 @@ class FrontierExplorer(Node):
         self.p_body_clearance  = max(
             float(g("body_clearance").value),
             float(self.p_safety_radius),
+        )
+        self.p_hard_safety_clearance = max(
+            0.03,
+            min(float(g("hard_safety_clearance").value), self.p_body_clearance),
         )
         self.p_self_filter_padding = float(g("self_filter_padding").value)
         self.p_safety_self_clear_radius = g("safety_self_clear_radius").value
@@ -696,18 +704,23 @@ class FrontierExplorer(Node):
         close_count = int(np.sum(front_clearances < self.p_obs_dist))
         return close_count >= self.p_front_min_points, min_clearance
 
-    def _check_safety_perimeter(self) -> Tuple[bool, float, float]:
+    def _check_safety_perimeter(self) -> Tuple[bool, float, float, int]:
         """
         Rectangular safety perimeter check around the real robot body.
 
-        Returns (is_danger, min_clearance_from_body, danger_angle_rad).
+        The 10 cm body clearance is a navigation target in narrow spaces, not a
+        full 360 degree deadlock trigger. This hard check is reserved for
+        immediate collision risk; side/rear soft clearance is handled by Nav2
+        costs and the contextual escape behavior below.
+
+        Returns (is_danger, min_clearance_from_body, danger_angle_rad, count).
         """
         points = self._scan_points_robot_frame()
         if points is None:
-            return False, float("inf"), 0.0
+            return False, float("inf"), 0.0, 0
 
         xs, ys, _ranges, base_angles = points
-        safety_mask = self._inside_body_rect(xs, ys, self.p_body_clearance)
+        safety_mask = self._inside_body_rect(xs, ys, self.p_hard_safety_clearance)
         self_mask = self._inside_body_rect(xs, ys, self.p_self_filter_padding)
         valid = safety_mask & (~self_mask)
 
@@ -716,15 +729,39 @@ class FrontierExplorer(Node):
             valid &= (~rear_mask)
 
         if not np.any(valid):
-            return False, float("inf"), 0.0
+            return False, float("inf"), 0.0, 0
 
         clearances = self._clearance_to_body(xs[valid], ys[valid])
         danger_angles = base_angles[valid]
         min_idx = int(np.argmin(clearances))
         min_clearance = float(clearances[min_idx])
         min_angle = float(danger_angles[min_idx])
-        close_count = int(np.sum(clearances <= self.p_body_clearance))
-        return close_count >= self.p_safety_min_points, min_clearance, min_angle
+        close_count = int(np.sum(clearances <= self.p_hard_safety_clearance))
+        return close_count >= self.p_safety_min_points, min_clearance, min_angle, close_count
+
+    def _start_avoidance(self, now: float, obstacle_angle: float, mode: str = "front") -> None:
+        """
+        Start a contextual escape. Front obstacles back up first; side/rear
+        obstacles escape forward so the rover moves away instead of backing
+        into the hazard.
+        """
+        if mode == "auto":
+            abs_angle = abs(obstacle_angle)
+            if abs_angle >= math.radians(120.0):
+                mode = "rear"
+            elif abs_angle >= math.radians(70.0):
+                mode = "side"
+            else:
+                mode = "front"
+
+        self._avoid_mode = mode
+        self._avoid_direction = -1.0 if obstacle_angle > 0.0 else 1.0
+        self._avoid_t0 = now
+        self._avoid_phase = 0
+        self._recov_t0 = None
+        self._fwd_t0 = None
+        self._safety_hits = 0
+        self.state = State.AVOIDING
 
 
     def _stop(self) -> None:
@@ -894,7 +931,7 @@ class FrontierExplorer(Node):
             return False
 
         goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = self.p_map_frame
+        goal.pose.header.frame_id = str(self.p_map_frame or "map")
         goal.pose.header.stamp = self.get_clock().now().to_msg()
         goal.pose.pose.position.x = fx
         goal.pose.pose.position.y = fy
@@ -1045,7 +1082,7 @@ class FrontierExplorer(Node):
         # ── Global safety perimeter (runs in EVERY state except AVOIDING
         #    and COMPLETE) ── 360° check with debounce
         if self.state not in (State.AVOIDING, State.COMPLETE):
-            danger, s_dist, s_angle = self._check_safety_perimeter()
+            danger, s_dist, s_angle, s_count = self._check_safety_perimeter()
             if danger:
                 self._safety_hits += 1
             else:
@@ -1053,23 +1090,15 @@ class FrontierExplorer(Node):
 
             if self._safety_hits >= self.p_safety_trigger_count:
                 self.get_logger().warn(
-                    f"Safety perimeter breach! Body clearance {s_dist:.2f}m "
-                    f"at angle={math.degrees(s_angle):.0f} deg - emergency avoidance"
+                    f"Hard safety breach! Body clearance {s_dist:.2f}m "
+                    f"at angle={math.degrees(s_angle):.0f} deg "
+                    f"({s_count} scan points) - emergency avoidance"
                 )
                 self._stop()
                 # Cancel any active Nav2 goal
                 if self.state == State.NAVIGATING and self._goal_handle is not None:
                     self._cancel_nav()
-                # Choose avoidance curve direction: steer AWAY from obstacle
-                # Obstacle on left (angle > 0) → curve right (-1)
-                # Obstacle on right (angle < 0) → curve left (+1)
-                self._avoid_direction = -1.0 if s_angle > 0.0 else 1.0
-                self._avoid_t0 = now
-                self._avoid_phase = 0
-                self._recov_t0 = None
-                self._fwd_t0 = None
-                self._safety_hits = 0
-                self.state = State.AVOIDING
+                self._start_avoidance(now, s_angle, mode="auto")
                 return
         {
             State.INIT_FORWARD:    self._state_init_forward,
@@ -1202,10 +1231,8 @@ class FrontierExplorer(Node):
                 f"Front body clearance {dist:.2f} m - emergency avoidance (no spin)"
             )
             self._cancel_nav()
-            self._avoid_t0 = now
-            self._avoid_phase = 0
-            self._avoid_direction = -1.0 if self._last_front_obstacle_y > 0.0 else 1.0
-            self.state = State.AVOIDING
+            obstacle_angle = self._last_front_obstacle_angle
+            self._start_avoidance(now, obstacle_angle, mode="front")
             return
 
         # Navigation result arrived via callback
@@ -1232,21 +1259,67 @@ class FrontierExplorer(Node):
             self.state = State.SELECT_FRONTIER
 
     # -------------------------------------------------------------------------
-    #  State: AVOIDING  (back-up + gentle curve — NO spin)
+    #  State: AVOIDING  (contextual escape — NO spin)
     # -------------------------------------------------------------------------
 
     def _state_avoiding(self, now: float) -> None:
         """
-        Two-phase avoidance WITHOUT any rotation:
-          Phase 0: Back up straight
-          Phase 1: Curve gently (forward + slight turn) to clear obstacle
+        Contextual avoidance WITHOUT any in-place rotation:
+          Front obstacle: back up, then curve away.
+          Side/rear obstacle: move forward in a gentle curve away from it.
         """
+        front_blocked, front_clearance = self._obstacle_in_sector()
+        if front_blocked:
+            self._avoid_direction = -1.0 if self._last_front_obstacle_y > 0.0 else 1.0
+            self._avoid_mode = "front"
+
+        if self._avoid_mode in ("side", "rear"):
+            elapsed = now - (self._avoid_t0 or now)
+            if front_blocked:
+                self._stop()
+                if now - self._last_avoid_blocked_warn > 1.0:
+                    self.get_logger().warn(
+                        f"Front corridor blocked at {front_clearance:.2f} m "
+                        "- switching side/rear escape to front backup"
+                    )
+                    self._last_avoid_blocked_warn = now
+                self._avoid_mode = "front"
+                self._avoid_phase = 0
+                self._avoid_t0 = now
+                return
+            if elapsed < self.p_curve_dur:
+                self._drive(
+                    max(self.p_curve_speed, self.p_recov_speed),
+                    self.p_curve_angular * self._avoid_direction,
+                )
+            else:
+                self._stop()
+                self._safety_hits = 0
+                self.get_logger().info(
+                    f"{self._avoid_mode.capitalize()} escape complete (no spin)"
+                )
+                self.state = State.SELECT_FRONTIER
+            return
+
         if self._avoid_phase == 0:
             # Phase 0: back up
             elapsed = now - (self._avoid_t0 or now)
-            if elapsed < self.p_backup_dur:
+            max_backup = self.p_backup_dur + 2.0
+            if elapsed < self.p_backup_dur or (
+                front_blocked and elapsed < max_backup
+            ):
                 self._drive(self.p_backup_speed)
             else:
+                if front_blocked:
+                    self._stop()
+                    if now - self._last_avoid_blocked_warn > 1.0:
+                        self.get_logger().warn(
+                            f"Front corridor still blocked at {front_clearance:.2f} m "
+                            "- retrying backup instead of pushing forward"
+                        )
+                        self._last_avoid_blocked_warn = now
+                    self._avoid_t0 = now
+                    return
                 # Transition to curve phase
                 self._avoid_phase = 1
                 self._avoid_t0 = now
@@ -1254,6 +1327,17 @@ class FrontierExplorer(Node):
         else:
             # Phase 1: gentle curve (forward + angular) — steer AWAY from obstacle
             elapsed = now - (self._avoid_t0 or now)
+            if front_blocked:
+                self._stop()
+                if now - self._last_avoid_blocked_warn > 1.0:
+                    self.get_logger().warn(
+                        f"Front corridor blocked again at {front_clearance:.2f} m "
+                        "- backing up before another curve"
+                    )
+                    self._last_avoid_blocked_warn = now
+                self._avoid_phase = 0
+                self._avoid_t0 = now
+                return
             if elapsed < self.p_curve_dur:
                 self._drive(
                     self.p_curve_speed,
@@ -1293,10 +1377,8 @@ class FrontierExplorer(Node):
             )
             self._stop()
             self._recov_t0 = None
-            self._avoid_t0 = self._now_sec()
-            self._avoid_phase = 0
+            self._start_avoidance(self._now_sec(), self._last_front_obstacle_angle, mode="front")
             self._safety_hits = 0
-            self.state = State.AVOIDING
             return
 
         if now - self._recov_t0 < self.p_recov_dur:

@@ -63,7 +63,7 @@ controller_server:
       max_lookahead_dist: 0.60
       lookahead_time: 1.0
       rotate_to_heading_angular_vel: 0.8
-      transform_tolerance: 0.5
+      transform_tolerance: 0.8
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.08
       approach_velocity_scaling_dist: 0.45
@@ -133,7 +133,7 @@ behavior_server:
       plugin: "nav2_behaviors::AssistedTeleop"
     global_frame: odom
     robot_base_frame: base_link
-    transform_tolerance: 0.5
+    transform_tolerance: 0.8
     simulate_ahead_time: 2.0
     max_rotational_vel: 1.0
     min_rotational_vel: 0.4
@@ -168,7 +168,7 @@ local_costmap:
       publish_frequency: 4.0
       global_frame: odom
       robot_base_frame: base_link
-      transform_tolerance: 0.5
+      transform_tolerance: 0.8
       rolling_window: true
       width: 5
       height: 5
@@ -191,7 +191,7 @@ local_costmap:
           marking: true
           data_type: "LaserScan"
           observation_persistence: 0.3
-          expected_update_rate: 0.25
+          expected_update_rate: 1.0
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           obstacle_max_range: 3.0
@@ -200,7 +200,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.22    # compact indoor margin; hard stop zone handles 10 cm body clearance
+        inflation_radius: 0.25    # >= inscribed radius (~0.232 m); hard stop zone handles 10 cm clearance
 
       always_send_full_costmap: true
 
@@ -215,7 +215,7 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      transform_tolerance: 0.5
+      transform_tolerance: 0.8
       resolution: 0.05
       track_unknown_space: true    # ← keep unknown cells as 255 in costmap
       footprint: "[ [0.2225, 0.212], [0.2225, -0.212], [-0.2225, -0.212], [-0.2225, 0.212] ]"
@@ -239,7 +239,7 @@ global_costmap:
           marking: true
           data_type: "LaserScan"
           observation_persistence: 0.3
-          expected_update_rate: 0.25
+          expected_update_rate: 1.0
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           obstacle_max_range: 3.0
@@ -248,7 +248,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 6.0
-        inflation_radius: 0.22
+        inflation_radius: 0.25
 
       always_send_full_costmap: true
 
@@ -285,17 +285,19 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "/cmd_vel"
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.5
-    source_timeout: 1.0
+    transform_tolerance: 0.8
+    source_timeout: 2.0
     base_shift_correction: true
     stop_pub_timeout: 2.0
     polygons: ["PolygonStop", "FootprintApproach"]
     PolygonStop:
       type: "polygon"
       action_type: "stop"
-      # Hard-stop zone: exact body plus 10 cm margin on all sides.
+      # Emergency hard-stop zone: exact body plus ~6 cm margin.
+      # The desired 10 cm clearance is handled by costmaps/explorer scoring; a
+      # 10 cm full-stop box is too conservative for narrow real-world spaces.
       polygon_pub_topic: "polygon_stop"
-      points: "[ [0.323, 0.312], [0.323, -0.312], [-0.323, -0.312], [-0.323, 0.312] ]"
+      points: "[ [0.283, 0.272], [0.283, -0.272], [-0.283, -0.272], [-0.283, 0.272] ]"
       min_points: 2
       visualize: true
       enabled: true

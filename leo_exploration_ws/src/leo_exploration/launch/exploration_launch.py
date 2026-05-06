@@ -205,7 +205,7 @@ def generate_launch_description():
     )
     odom_tf_timestamp_offset_arg = DeclareLaunchArgument(
         "odom_tf_timestamp_offset",
-        default_value="0.10",
+        default_value="0.20",
         description=(
             "Seconds added to locally republished odom TF stamps to absorb "
             "WiFi clock jitter between the Pi and this machine."
@@ -312,23 +312,6 @@ def generate_launch_description():
             "--roll", "0.0",
             "--frame-id", "base_link",
             "--child-frame-id", laser_frame,
-        ],
-    )
-
-    tf_basefootprint_baselink = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="tf_basefootprint_baselink",
-        output="screen",
-        arguments=[
-            "--x", "0.0",
-            "--y", "0.0",
-            "--z", "0.0",
-            "--yaw", "0.0",
-            "--pitch", "0.0",
-            "--roll", "0.0",
-            "--frame-id", "base_footprint",
-            "--child-frame-id", "base_link",
         ],
     )
 
@@ -504,10 +487,11 @@ def generate_launch_description():
                     "map_frame": "map",
                     "cmd_vel_topic": "/cmd_vel_nav",
                     "min_frontier_size": 5,
-                    "obstacle_dist": 0.20,
+                    "obstacle_dist": 0.12,
                     "scan_half_angle": 70.0,
                     "safety_radius": 0.10,
                     "body_clearance": 0.10,
+                    "hard_safety_clearance": 0.06,
                     "self_filter_padding": 0.02,
                     "laser_x_offset": laser_x,
                     "laser_y_offset": laser_y,
@@ -515,7 +499,7 @@ def generate_launch_description():
                     "robot_front": 0.2225,
                     "robot_rear": -0.2225,
                     "robot_half_width": 0.212,
-                    "scan_timeout": 0.7,
+                    "scan_timeout": 1.5,
                     "front_min_points": 3,
                     "safety_min_points": 2,
                     "nav_timeout": 35.0,
@@ -605,7 +589,6 @@ def generate_launch_description():
         system_monitor_node,
         odometry_tf_bridge_node,
         rplidar_node,
-        tf_basefootprint_baselink,
         tf_base_laser,
         startup_check_node,
         startup_ready_chain,

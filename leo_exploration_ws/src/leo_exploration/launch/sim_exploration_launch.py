@@ -234,7 +234,7 @@ def generate_launch_description():
     #     We do NOT use nav2_bringup/navigation_launch.py because it:
     #       (a) remaps /tf → tf, /tf_static → tf_static (breaks our bridge)
     #       (b) launches 10 nodes in a chain; any failure blocks bt_navigator
-    #     Instead we launch only the 4 essential nodes + lifecycle_manager.
+    #     Velocity commands are routed through collision_monitor before Gazebo.
     # =========================================================================
     nav2_nodes = TimerAction(
         period=22.0,
@@ -249,8 +249,8 @@ def generate_launch_description():
                 output="screen",
                 parameters=[nav2_params, {"use_sim_time": True}],
                 remappings=[
-                    ("cmd_vel", "/sim/cmd_vel"),
-                    ("/cmd_vel", "/sim/cmd_vel"),
+                    ("cmd_vel", "/cmd_vel_nav"),
+                    ("/cmd_vel", "/cmd_vel_nav"),
                 ],
             ),
 
@@ -271,9 +271,18 @@ def generate_launch_description():
                 output="screen",
                 parameters=[nav2_params, {"use_sim_time": True}],
                 remappings=[
-                    ("cmd_vel", "/sim/cmd_vel"),
-                    ("/cmd_vel", "/sim/cmd_vel"),
+                    ("cmd_vel", "/cmd_vel_nav"),
+                    ("/cmd_vel", "/cmd_vel_nav"),
                 ],
+            ),
+
+            # ── Collision Monitor (final hard-stop before Gazebo) ──
+            Node(
+                package="nav2_collision_monitor",
+                executable="collision_monitor",
+                name="collision_monitor",
+                output="screen",
+                parameters=[nav2_params, {"use_sim_time": True}],
             ),
 
             # ── BT Navigator (orchestrates navigation via behavior tree) ──
@@ -299,6 +308,7 @@ def generate_launch_description():
                         "controller_server",
                         "planner_server",
                         "behavior_server",
+                        "collision_monitor",
                         "bt_navigator",
                     ],
                 }],
@@ -322,7 +332,7 @@ def generate_launch_description():
                     "use_sim_time":          True,
                     "robot_frame":           "base_link",
                     "map_frame":             "map",
-                    "cmd_vel_topic":         "/sim/cmd_vel",
+                    "cmd_vel_topic":         "/cmd_vel_nav",
                     "min_frontier_size":     5,
                     "obstacle_dist":         0.55,
                     "scan_half_angle":       90.0,       # 180° front-only lidar
