@@ -224,6 +224,21 @@ ros2 topic pub /explore/enable std_msgs/msg/Bool '{data: false}' --once
 ros2 topic pub /explore/enable std_msgs/msg/Bool '{data: true}' --once
 ```
 
+### Start/Stop Commands
+
+```bash
+ros2 topic pub /explore/command std_msgs/msg/String '{data: "start"}' --once
+ros2 topic pub /explore/command std_msgs/msg/String '{data: "stop"}' --once
+```
+
+### Manual Override
+
+```bash
+ros2 topic pub /manual_override/enable std_msgs/msg/Bool '{data: true}' --once
+```
+
+Then publish `/manual_override/cmd_vel` to drive manually.
+
 ### Monitor Exploration Progress
 
 ```bash
