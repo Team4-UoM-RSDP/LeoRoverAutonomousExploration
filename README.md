@@ -1,6 +1,6 @@
 # Leo Rover Autonomous Exploration
 
-<video src="Promotional_Video_under_24MB.mp4" controls poster="preview.webp"></video>
+[![Promotional video](preview.webp)](Promotional_Video_under_24MB.mp4)
 
 **ROS 2 Jazzy · Ubuntu 24.04 · Gazebo Harmonic · MIT License**
 
