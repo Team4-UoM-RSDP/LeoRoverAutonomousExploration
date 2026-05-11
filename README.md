@@ -1,5 +1,7 @@
 # Leo Rover Autonomous Exploration
 
+<video src="Promotional_Video_under_24MB.mp4" controls poster="preview.webp"></video>
+
 **ROS 2 Jazzy · Ubuntu 24.04 · Gazebo Harmonic · MIT License**
 
 A frontier-based autonomous exploration system for the [Leo Rover](https://www.leorover.tech/) mobile robot. This project uses **Wavefront Frontier Detection (WFD)** to autonomously explore and map unknown environments. It supports both **Gazebo simulation** and **real-robot deployment** with a shared exploration node.
