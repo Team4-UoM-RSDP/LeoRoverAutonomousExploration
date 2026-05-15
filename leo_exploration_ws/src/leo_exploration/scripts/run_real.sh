@@ -11,10 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
-PI_IP="${PI_IP:-192.168.8.2}"
+PI_IP="${PI_IP:-10.108.176.184}"
 LOCAL_IP="${LOCAL_IP:-auto}"
 NETWORK_INTERFACE="${NETWORK_INTERFACE:-auto}"
-ROS_DOMAIN_ID_VALUE="${ROS_DOMAIN_ID:-42}"
+INHERITED_ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-}"
+ROS_DOMAIN_ID_VALUE="${RUN_REAL_ROS_DOMAIN_ID:-42}"
+DOMAIN_ID_EXPLICIT="${RUN_REAL_ROS_DOMAIN_ID:+true}"
+DOMAIN_ID_EXPLICIT="${DOMAIN_ID_EXPLICIT:-false}"
 SERIAL_PORT="${SERIAL_PORT:-/dev/ttyUSB0}"
 SCAN_TOPIC="${SCAN_TOPIC:-/scan}"
 ODOM_TOPIC="${ODOM_TOPIC:-/merged_odom}"
@@ -24,6 +27,7 @@ LAUNCH_LIDAR="${LAUNCH_LIDAR:-true}"
 CMD_VEL_OUT_TOPIC="${CMD_VEL_OUT_TOPIC:-/cmd_vel_relay}"
 BUILD_MODE="${BUILD_MODE:-auto}"     # auto | always | never
 STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-180}"
+ROS_CLI_TIMEOUT="${ROS_CLI_TIMEOUT:-12}"
 FOLLOW_LOG="${FOLLOW_LOG:-true}"
 SERIAL_CHMOD="${SERIAL_CHMOD:-true}"
 SHOW_LAST_LINES="${SHOW_LAST_LINES:-80}"
@@ -41,7 +45,7 @@ Usage:
   ./run_real.sh [options]
 
 Common options:
-  --pi-ip IP                 Leo Rover Pi IP (default: 192.168.8.2)
+  --pi-ip IP                 Leo Rover Pi IP (default: 10.108.176.184)
   --serial-port PATH         RPLidar serial device (default: /dev/ttyUSB0)
   --domain-id ID             ROS_DOMAIN_ID shared with the Pi (default: 42)
   --local-ip IP|auto         Local IP for CycloneDDS peers (default: auto)
@@ -58,8 +62,11 @@ Common options:
   --no-follow-log            Keep running quietly after readiness
   --                         Pass remaining args directly to ros2 launch
 
+Use --domain-id for a non-default rover domain. Ambient ROS_DOMAIN_ID is ignored
+so simulation shells cannot silently put the real rover on the wrong domain.
+
 Environment overrides use the same uppercase names, for example:
-  PI_IP=192.168.8.2 SERIAL_PORT=/dev/ttyUSB0 ./run_real.sh
+  PI_IP=10.108.176.184 SERIAL_PORT=/dev/ttyUSB0 ./run_real.sh
 EOF
 }
 
@@ -131,7 +138,7 @@ while [[ $# -gt 0 ]]; do
     --serial-port)
       SERIAL_PORT="$2"; shift 2 ;;
     --domain-id|--ros-domain-id)
-      ROS_DOMAIN_ID_VALUE="$2"; shift 2 ;;
+      ROS_DOMAIN_ID_VALUE="$2"; DOMAIN_ID_EXPLICIT="true"; shift 2 ;;
     --local-ip)
       LOCAL_IP="$2"; shift 2 ;;
     --network-interface)
@@ -187,11 +194,31 @@ require_command() {
   command_exists "$1" || fail "Missing command: $1"
 }
 
+report_domain_choice() {
+  if [[ "$DOMAIN_ID_EXPLICIT" != "true" &&
+        -n "$INHERITED_ROS_DOMAIN_ID" &&
+        "$INHERITED_ROS_DOMAIN_ID" != "$ROS_DOMAIN_ID_VALUE" ]]; then
+    warn "Ignoring inherited ROS_DOMAIN_ID=$INHERITED_ROS_DOMAIN_ID; using real-rover domain $ROS_DOMAIN_ID_VALUE"
+    warn "Pass --domain-id $INHERITED_ROS_DOMAIN_ID only if the Pi is configured for that domain."
+  fi
+}
+
+source_setup_file() {
+  local setup_file="$1"
+  local shell_flags="$-"
+  local status=0
+
+  set +u
+  # shellcheck disable=SC1090
+  source "$setup_file" || status=$?
+  [[ "$shell_flags" == *u* ]] && set -u
+  return "$status"
+}
+
 source_ros() {
   if [[ -z "${ROS_DISTRO:-}" ]]; then
     [[ -f "$ROS_SETUP" ]] || fail "ROS setup not found: $ROS_SETUP"
-    # shellcheck disable=SC1090
-    source "$ROS_SETUP"
+    source_setup_file "$ROS_SETUP" || fail "Could not source ROS setup: $ROS_SETUP"
   fi
 
   [[ "${ROS_DISTRO:-}" == "jazzy" ]] || warn "Expected ROS 2 Jazzy, got ROS_DISTRO=${ROS_DISTRO:-unset}"
@@ -227,8 +254,7 @@ maybe_build_workspace() {
     ok "Build skipped (use --build to force rebuild)"
   fi
 
-  # shellcheck disable=SC1090
-  source "$setup_file"
+  source_setup_file "$setup_file" || fail "Could not source workspace setup: $setup_file"
   ok "Workspace overlay sourced"
 }
 
@@ -322,6 +348,7 @@ EOF
   export CYCLONEDDS_URI="file://$dds_config"
   unset FASTRTPS_DEFAULT_PROFILES_FILE || true
   unset ROS_DISCOVERY_SERVER || true
+  unset ROS_LOCALHOST_ONLY || true
 
   ok "CycloneDDS config written"
 }
@@ -382,17 +409,17 @@ launch_alive() {
 }
 
 topic_visible() {
-  timeout 4s ros2 topic list 2>/dev/null | grep -Fxq "$1"
+  timeout "${ROS_CLI_TIMEOUT}s" ros2 topic list --no-daemon 2>/dev/null | grep -Fxq "$1"
 }
 
 topic_once() {
   local topic="$1"
-  timeout 5s ros2 topic echo --once "$topic" >/dev/null 2>&1
+  timeout "${ROS_CLI_TIMEOUT}s" ros2 topic echo --once "$topic" >/dev/null 2>&1
 }
 
 map_once() {
   local topic="$1"
-  timeout 6s ros2 topic echo --once --qos-durability transient_local "$topic" >/dev/null 2>&1 \
+  timeout "${ROS_CLI_TIMEOUT}s" ros2 topic echo --once --qos-durability transient_local "$topic" >/dev/null 2>&1 \
     || topic_visible "$topic"
 }
 
@@ -400,7 +427,7 @@ tf_ready() {
   local target="$1"
   local source="$2"
   local output
-  output="$(timeout 4s ros2 run tf2_ros tf2_echo "$target" "$source" 2>&1 || true)"
+  output="$(timeout "${ROS_CLI_TIMEOUT}s" ros2 run tf2_ros tf2_echo "$target" "$source" 2>&1 || true)"
   grep -Eq "Translation:|At time" <<<"$output"
 }
 
@@ -416,17 +443,17 @@ all_nav2_active() {
   )
 
   for node in "${nodes[@]}"; do
-    state="$(timeout 3s ros2 lifecycle get "/$node" 2>/dev/null || true)"
+    state="$(timeout "${ROS_CLI_TIMEOUT}s" ros2 lifecycle get "/$node" 2>/dev/null || true)"
     grep -qi "active" <<<"$state" || return 1
   done
 }
 
 action_ready() {
-  timeout 4s ros2 action list 2>/dev/null | grep -Fxq "/navigate_to_pose"
+  timeout "${ROS_CLI_TIMEOUT}s" ros2 action list 2>/dev/null | grep -Fxq "/navigate_to_pose"
 }
 
 node_visible() {
-  timeout 4s ros2 node list 2>/dev/null | grep -Fxq "$1"
+  timeout "${ROS_CLI_TIMEOUT}s" ros2 node list --no-daemon 2>/dev/null | grep -Fxq "$1"
 }
 
 wait_for() {
@@ -501,6 +528,7 @@ main() {
   source_ros
   maybe_build_workspace
   check_ros_packages
+  report_domain_choice
   resolve_network
   write_cyclonedds_config
   check_serial_port

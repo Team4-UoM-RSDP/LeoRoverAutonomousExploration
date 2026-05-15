@@ -136,7 +136,7 @@ TF, SLAM, Nav2, RViz, and the frontier explorer in the correct order:
 ```bash
 cd leo_exploration_ws
 source install/setup.bash
-ros2 launch leo_exploration exploration_launch.py pi_ip:=192.168.8.2 serial_port:=/dev/ttyUSB0 rviz:=true
+ros2 launch leo_exploration exploration_launch.py pi_ip:=10.108.176.184 serial_port:=/dev/ttyUSB0 rviz:=true
 ```
 
 The default real lidar geometry is:
