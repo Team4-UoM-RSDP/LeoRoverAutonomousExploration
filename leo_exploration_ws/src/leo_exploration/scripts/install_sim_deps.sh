@@ -23,6 +23,7 @@ sudo apt-get install -y \
   ros-jazzy-fastrtps \
   ros-jazzy-rmw-fastrtps-cpp \
   ros-jazzy-rmw-fastrtps-shared-cpp \
+  ros-jazzy-rmw-cyclonedds-cpp \
   ros-jazzy-rosidl-typesupport-fastrtps-c \
   ros-jazzy-rosidl-typesupport-fastrtps-cpp \
   ros-jazzy-behaviortree-cpp \
@@ -36,6 +37,7 @@ sudo apt-get install -y \
   ros-jazzy-nav2-controller \
   ros-jazzy-nav2-planner \
   ros-jazzy-nav2-behaviors \
+  ros-jazzy-nav2-velocity-smoother \
   ros-jazzy-nav2-lifecycle-manager \
   ros-jazzy-nav2-msgs \
   ros-jazzy-nav2-map-server \
@@ -47,6 +49,7 @@ sudo apt-get install -y \
   ros-jazzy-robot-state-publisher \
   ros-jazzy-joint-state-publisher \
   python3-numpy \
+  python3-psutil \
   python3-colcon-common-extensions
 
 info "=== Step 2: Gazebo Harmonic ==="

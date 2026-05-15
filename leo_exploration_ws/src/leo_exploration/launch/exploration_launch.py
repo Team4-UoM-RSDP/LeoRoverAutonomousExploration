@@ -112,6 +112,7 @@ def _configure_dds(context):
         SetEnvironmentVariable("CYCLONEDDS_URI", "file://" + config_path),
         UnsetEnvironmentVariable("FASTRTPS_DEFAULT_PROFILES_FILE"),
         UnsetEnvironmentVariable("ROS_DISCOVERY_SERVER"),
+        UnsetEnvironmentVariable("ROS_LOCALHOST_ONLY"),
         LogInfo(
             msg=(
                 f"[DDS] CycloneDDS peers: local {local_ip} on {network_interface}, "
@@ -139,7 +140,7 @@ def generate_launch_description():
     )
     pi_ip_arg = DeclareLaunchArgument(
         "pi_ip",
-        default_value="192.168.8.2",
+        default_value="10.108.176.184",
         description="Leo Rover Pi WiFi IP address.",
     )
     local_ip_arg = DeclareLaunchArgument(
